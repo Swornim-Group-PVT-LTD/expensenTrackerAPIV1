@@ -468,48 +468,79 @@ class ExpenseController extends Controller
     public function getTotalExpenses(Request $request)
     {
         $user = Auth::user();
-
+    
+        if (!$user) {
+            return response()->json([
+                'message' => 'Request is not authorized'
+            ], 401);
+        }
+    
         $filter = $request->filter ?? 'all';
-
+    
         $query = Expense::where('customerid', $user->customerid);
-
+    
+        $today = Carbon::now();
+    
         switch ($filter) {
-
+    
             case 'daily':
-                $query->whereDate('created_date', Carbon::today());
+    
+                $query->whereDate('created_date', $today->toDateString());
+    
                 break;
-
+    
             case 'weekly':
-                $query->whereBetween(DB::raw('DATE(created_date)'), [
-                    Carbon::now()->startOfWeek()->toDateString(),
-                    Carbon::now()->endOfWeek()->toDateString()
-                ]);
+    
+                $startWeek = $today->copy()->startOfWeek()->toDateString();
+                $endWeek   = $today->copy()->endOfWeek()->toDateString();
+    
+                $query->whereBetween(
+                    DB::raw('DATE(created_date)'),
+                    [$startWeek, $endWeek]
+                );
+    
                 break;
-
+    
             case 'monthly':
-                $query->whereMonth('created_date', Carbon::now()->month)
-                    ->whereYear('created_date', Carbon::now()->year);
+    
+                $query->whereMonth('created_date', $today->month)
+                    ->whereYear('created_date', $today->year);
+    
                 break;
-
+    
             case 'yearly':
-                $query->whereYear('created_date', Carbon::now()->year);
+    
+                $query->whereYear('created_date', $today->year);
+    
                 break;
-
+    
+            case 'all':
             default:
+                // No filter
                 break;
         }
-
-        $totalExpenses = $query->sum('add_expenses');
-
+    
+        $totalExpenses = (float) $query->sum('add_expenses');
+    
+        /**
+         * Currency from master balance
+         */
         $balance = Balance::with('currency')
             ->where('customerid', $user->customerid)
             ->first();
-
+    
         return response()->json([
-            'message'        => 'Total expenses fetched successfully.',
-            'total_expenses' => (float) $totalExpenses,
-            'currency'       => $balance->currency->currency ?? null,
-            'symbol'         => $balance->currency->symbol ?? null,
+            'message' => 'Total expenses fetched successfully.',
+    
+            'filter_type' => $filter,
+    
+            'total_expenses' => $totalExpenses,
+    
+            'currency' => [
+                'country'  => $balance->currency->country_name ?? null,
+                'currency' => $balance->currency->currency ?? null,
+                'symbol'   => $balance->currency->symbol ?? null,
+            ],
         ]);
     }
 
