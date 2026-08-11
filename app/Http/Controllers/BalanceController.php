@@ -241,6 +241,7 @@ class BalanceController extends Controller
         // ============================
     // ACCOUNT STATEMENT
     // ============================
+
     public function getAccountStatement(Request $request)
     {
         $user = Auth::user();
@@ -252,6 +253,10 @@ class BalanceController extends Controller
         }
 
         $customerId = $user->customerid;
+
+        // =========================================================
+        // DATE RANGE
+        // =========================================================
 
         $fromDate = $request->from_date
             ? Carbon::parse($request->from_date)->toDateString()
@@ -268,7 +273,10 @@ class BalanceController extends Controller
             ], 422);
         }
 
-        // Master Balance
+        // =========================================================
+        // MASTER BALANCE
+        // =========================================================
+
         $balance = Balance::with('currency')
             ->where('customerid', $customerId)
             ->first();
@@ -279,18 +287,20 @@ class BalanceController extends Controller
             ], 404);
         }
 
-        // Opening Balance
+        // =========================================================
+        // OPENING BALANCE
+        // =========================================================
+
         $dailyBalance = DailyBalance::where('customerid', $customerId)
             ->where('balance_date', $fromDate)
             ->first();
 
         if ($dailyBalance) {
 
-            $openingBalance = $dailyBalance->opening_balance;
+            $openingBalance = (float) $dailyBalance->opening_balance;
 
         } else {
 
-            // Last balance before selected date
             $previousBalance = DailyBalance::where('customerid', $customerId)
                 ->where('balance_date', '<', $fromDate)
                 ->orderByDesc('balance_date')
@@ -298,26 +308,36 @@ class BalanceController extends Controller
 
             if ($previousBalance) {
 
-                $openingBalance = $previousBalance->closing_balance;
+                $openingBalance = (float) $previousBalance->closing_balance;
 
             } else {
 
-                $openingBalance = $balance->opening_balance;
+                $openingBalance = (float) $balance->opening_balance;
             }
         }
 
-        // Date Filter
+        // =========================================================
+        // DATE FILTER
+        // =========================================================
+
         $applyDateFilter = function ($query) use ($fromDate, $toDate) {
-            $query->whereBetween('created_date', [$fromDate, $toDate]);
+            $query->whereBetween('created_date', [
+                $fromDate,
+                $toDate
+            ]);
         };
 
-        // Income
+        // =========================================================
+        // INCOME
+        // =========================================================
+
         $incomes = Income::where('customerid', $customerId)
             ->when(true, $applyDateFilter)
             ->get()
             ->map(function ($item) {
+
                 return [
-                    'date' => $item->created_date,
+                    'date' => Carbon::parse($item->created_date)->format('Y-m-d H:i:s'),
                     'type' => 'Income',
                     'description' => $item->income_category,
                     'credit' => (float) $item->add_income,
@@ -325,13 +345,17 @@ class BalanceController extends Controller
                 ];
             });
 
-        // Expense
+        // =========================================================
+        // EXPENSE
+        // =========================================================
+
         $expenses = Expense::where('customerid', $customerId)
             ->when(true, $applyDateFilter)
             ->get()
             ->map(function ($item) {
+
                 return [
-                    'date' => $item->created_date,
+                    'date' => Carbon::parse($item->created_date)->format('Y-m-d H:i:s'),
                     'type' => 'Expense',
                     'description' => $item->expense_category,
                     'credit' => 0,
@@ -339,13 +363,17 @@ class BalanceController extends Controller
                 ];
             });
 
-        // Saving
+        // =========================================================
+        // SAVING
+        // =========================================================
+
         $savings = Saving::where('customerid', $customerId)
             ->when(true, $applyDateFilter)
             ->get()
             ->map(function ($item) {
+
                 return [
-                    'date' => $item->created_date,
+                    'date' => Carbon::parse($item->created_date)->format('Y-m-d H:i:s'),
                     'type' => 'Saving',
                     'description' => $item->saving_category,
                     'credit' => 0,
@@ -353,13 +381,17 @@ class BalanceController extends Controller
                 ];
             });
 
-        // Investment
+        // =========================================================
+        // INVESTMENT
+        // =========================================================
+
         $investments = Investment::where('customerid', $customerId)
             ->when(true, $applyDateFilter)
             ->get()
             ->map(function ($item) {
+
                 return [
-                    'date' => $item->created_date,
+                    'date' => Carbon::parse($item->created_date)->format('Y-m-d H:i:s'),
                     'type' => 'Investment',
                     'description' => $item->investment_category,
                     'credit' => 0,
@@ -367,18 +399,28 @@ class BalanceController extends Controller
                 ];
             });
 
-        // Merge Transactions
-        $transactions = $incomes
+        // =========================================================
+        // MERGE TRANSACTIONS
+        // =========================================================
+        //
+        // Sort by actual created date and time so records appear
+        // in the exact sequence they were entered.
+        // =========================================================
+
+        $transactions = collect()
+            ->merge($incomes)
             ->merge($expenses)
             ->merge($savings)
             ->merge($investments)
-            ->sortBy([
-                ['date', 'asc'],
-                ['type', 'asc'],
-            ])
+            ->sortBy(function ($item) {
+                return Carbon::parse($item['date'])->timestamp;
+            })
             ->values();
 
-        // Running Balance
+        // =========================================================
+        // RUNNING BALANCE
+        // =========================================================
+
         $runningBalance = $openingBalance;
 
         $transactions = $transactions->map(function ($item) use (&$runningBalance) {
@@ -391,6 +433,10 @@ class BalanceController extends Controller
             return $item;
         });
 
+        // =========================================================
+        // RESPONSE
+        // =========================================================
+
         return response()->json([
 
             'message' => 'Account statement retrieved successfully',
@@ -402,19 +448,21 @@ class BalanceController extends Controller
             ],
 
             'from_date' => $fromDate,
+
             'to_date' => $toDate,
 
             'opening_balance' => $openingBalance,
 
             'closing_balance' => $runningBalance,
 
-            'total_credit' => $transactions->sum('credit'),
+            'total_credit' => (float) $transactions->sum('credit'),
 
-            'total_debit' => $transactions->sum('debit'),
+            'total_debit' => (float) $transactions->sum('debit'),
 
             'data' => $transactions
         ]);
     }
+    
     public function getDailyBalance(Request $request)
     {
         $user = Auth::user();
