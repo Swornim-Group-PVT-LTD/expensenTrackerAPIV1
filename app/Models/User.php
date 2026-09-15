@@ -22,11 +22,16 @@ class User extends Authenticatable
         'first_name',
         'middle_name',
         'last_name',
-        'phonenumber', // ✅ MUST BE INCLUDED
+        'phonenumber',
         'email',
         'country',
         'address',
         'password',
+
+        // Extra fields
+        'user_type',
+        'logo_uploads',
+        'representative_full_name',
     ];
 
     /**
