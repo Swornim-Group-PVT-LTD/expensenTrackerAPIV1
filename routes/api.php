@@ -15,6 +15,7 @@ use App\Http\Controllers\InvestmentCategoryController;
 use App\Http\Controllers\CurrencyController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ExpenseThresholdController;
+use App\Http\Controllers\InvoiceController;
 /*
 |--------------------------------------------------------------------------
 | API RoutesSS
@@ -155,4 +156,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/expense-thresholds/{sn}', [ExpenseThresholdController::class, 'deleteExpenseThreshold']);
     Route::get('/expense-threshold/compare', [ExpenseThresholdController::class, 'compareThreshold']);
 
+});
+
+// Invoice Routes
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('/invoices', [InvoiceController::class, 'addInvoice']);
+    Route::get('/invoices', [InvoiceController::class, 'getInvoiceList']);
+    Route::get('/invoices/{sn}', [InvoiceController::class, 'getInvoice']);
+    Route::post('/invoices/{sn}/update', [InvoiceController::class, 'updateInvoice']);
+    Route::delete('/invoices/{sn}', [InvoiceController::class, 'deleteInvoice']);
 });
