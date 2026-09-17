@@ -2,778 +2,849 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\DB;
-use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
+use App\Http\Controllers\Controller;
 use App\Models\Expense;
-use App\Models\Balance;
-use App\Models\DailyBalance;
+use App\Models\ExpenseDocument;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
 
 class ExpenseController extends Controller
 {
-    // =====================================
-    // ADD EXPENSE
-    // =====================================
+    /*
+    |--------------------------------------------------------------------------
+    | ADD EXPENSE
+    |--------------------------------------------------------------------------
+    */
+
     public function addExpense(Request $request)
     {
-        $request->validate([
-            'add_expenses'     => 'required|numeric|min:0',
-            'expense_category' => 'required|string',
-        ]);
-
-        $user  = Auth::user();
-        $today = Carbon::now()->toDateString();
-
-        DB::beginTransaction();
-
         try {
+            /*
+            |--------------------------------------------------------------------------
+            | Get authenticated user
+            |--------------------------------------------------------------------------
+            */
+            $user = auth()->user();
 
-            // Opening balance must exist
-            $balance = Balance::where('customerid', $user->customerid)
-                ->with('currency')
-                ->first();
-
-            if (!$balance) {
+            if (!$user) {
                 return response()->json([
-                    'message' => 'Opening balance not found. Please create opening balance first.'
-                ], 404);
+                    'success' => false,
+                    'message' => 'Unauthenticated user.',
+                ], 401);
             }
 
-            /**
-             * Get or create today's daily balance
-             */
-            $dailyBalance = DailyBalance::where('customerid', $user->customerid)
-                ->where('balance_date', $today)
-                ->first();
+            $customerid = $user->customerid;
 
-            if (!$dailyBalance) {
+            /*
+            |--------------------------------------------------------------------------
+            | Validation
+            |--------------------------------------------------------------------------
+            */
+            $validated = $request->validate([
+                'add_expenses' => 'required|numeric|min:0',
 
-                // Get previous closing balance
-                $previousBalance = DailyBalance::where('customerid', $user->customerid)
-                    ->where('balance_date', '<', $today)
-                    ->orderByDesc('balance_date')
-                    ->first();
+                'expense_category' => 'required|string|max:255',
 
-                $openingBalance = $previousBalance
-                    ? $previousBalance->closing_balance
-                    : $balance->opening_balance;
+                'upload_receipt' => [
+                    'nullable',
+                    'file',
+                    'mimes:jpg,jpeg,png,pdf',
+                    'max:5120',
+                ],
 
-                $dailyBalance = DailyBalance::create([
-                    'customerid'      => $user->customerid,
-                    'balance_date'    => $today,
-                    'opening_balance' => $openingBalance,
-                    'total_credit'    => 0,
-                    'total_debit'     => 0,
-                    'closing_balance' => $openingBalance,
-                    'currency_id'     => $balance->currency_id,
+                'upload_doc' => [
+                    'nullable',
+                    'array',
+                ],
+
+                'upload_doc.*' => [
+                    'file',
+                    'mimes:jpg,jpeg,png,pdf,doc,docx',
+                    'max:10240',
+                ],
+            ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Generate unique Expense SN
+            |--------------------------------------------------------------------------
+            */
+            do {
+                $sn = 'EXP' . strtoupper(Str::random(8));
+            } while (Expense::where('sn', $sn)->exists());
+
+            /*
+            |--------------------------------------------------------------------------
+            | Create Expense
+            |--------------------------------------------------------------------------
+            */
+            $expense = Expense::create([
+                'sn' => $sn,
+                'customerid' => $customerid,
+                'add_expenses' => $validated['add_expenses'],
+                'total_expenses' => 0,
+                'expense_category' => $validated['expense_category'],
+                'upload_receipt' => null,
+                'created_date' => now(),
+                'updated_date' => now(),
+            ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Upload Receipt
+            |--------------------------------------------------------------------------
+            */
+            if ($request->hasFile('upload_receipt')) {
+
+                $receipt = $request->file('upload_receipt');
+
+                $receiptDirectory = public_path('upload_receipt');
+
+                if (!File::exists($receiptDirectory)) {
+                    File::makeDirectory(
+                        $receiptDirectory,
+                        0755,
+                        true
+                    );
+                }
+
+                $receiptName = time() . '_' . Str::random(10) . '.' .
+                    $receipt->getClientOriginalExtension();
+
+                $receipt->move(
+                    $receiptDirectory,
+                    $receiptName
+                );
+
+                $expense->update([
+                    'upload_receipt' => 'upload_receipt/' . $receiptName,
+                    'updated_date' => now(),
                 ]);
             }
 
-            // Check sufficient balance using daily balance
-            if ($dailyBalance->closing_balance < $request->add_expenses) {
-                return response()->json([
-                    'message' => 'Insufficient balance to complete this expense.',
-                    'available_balance' => (float) $dailyBalance->closing_balance,
-                ], 400);
-            }
+            /*
+            |--------------------------------------------------------------------------
+            | Calculate Total Expenses
+            |--------------------------------------------------------------------------
+            */
+            $totalExpenses = Expense::where(
+                'customerid',
+                $customerid
+            )->sum('add_expenses');
 
-            // Generate Expense SN
-            $sn = 'EXP' . str_pad((Expense::max('id') ?? 0) + 1, 6, '0', STR_PAD_LEFT);
-
-            // Calculate cumulative total expenses
-            $existingTotal = Expense::where('customerid', $user->customerid)
-                ->sum('add_expenses');
-
-            $newTotal = $existingTotal + $request->add_expenses;
-
-            /**
-             * Store expense transaction
-             */
-            $expense = Expense::create([
-                'sn'               => $sn,
-                'customerid'       => $user->customerid,
-                'add_expenses'     => $request->add_expenses,
-                'total_expenses'   => $newTotal,
-                'expense_category' => $request->expense_category,
-                'created_date'     => $today,
-                'updated_date'     => $today,
+            $expense->update([
+                'total_expenses' => $totalExpenses,
+                'updated_date' => now(),
             ]);
 
-            /**
-             * Update daily balance (DEBIT)
-             */
-            $dailyBalance->total_debit += $request->add_expenses;
+            /*
+            |--------------------------------------------------------------------------
+            | Upload Multiple Documents
+            |--------------------------------------------------------------------------
+            */
+            if ($request->hasFile('upload_doc')) {
 
-            $dailyBalance->closing_balance =
-                $dailyBalance->opening_balance +
-                $dailyBalance->total_credit -
-                $dailyBalance->total_debit;
+                $documentDirectory = public_path('upload_doc');
 
-            $dailyBalance->save();
+                if (!File::exists($documentDirectory)) {
+                    File::makeDirectory(
+                        $documentDirectory,
+                        0755,
+                        true
+                    );
+                }
 
-            DB::commit();
+                foreach ($request->file('upload_doc') as $document) {
 
+                    $documentName = time() . '_' .
+                        Str::random(10) . '.' .
+                        $document->getClientOriginalExtension();
+
+                    $document->move(
+                        $documentDirectory,
+                        $documentName
+                    );
+
+                    ExpenseDocument::create([
+                        'expense_sn' => $expense->sn,
+                        'file_name' => $documentName,
+                        'file_path' => 'upload_doc/' . $documentName,
+                        'file_type' => $document->getClientMimeType(),
+                    ]);
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Reload Expense
+            |--------------------------------------------------------------------------
+            */
+            $expense->refresh();
+
+            $expense->load('documents');
+
+            /*
+            |--------------------------------------------------------------------------
+            | Success Response
+            |--------------------------------------------------------------------------
+            */
             return response()->json([
+                'success' => true,
                 'message' => 'Expense added successfully.',
+
                 'data' => [
-                    'id'               => $expense->id,
-                    'sn'               => $expense->sn,
-                    'customerid'       => $expense->customerid,
-                    'add_expenses'     => (float) $expense->add_expenses,
-                    'total_expenses'   => (float) $expense->total_expenses,
+                    'sn' => $expense->sn,
+
+                    'customerid' => $expense->customerid,
+
+                    'add_expenses' => $expense->add_expenses,
+
+                    'total_expenses' => $expense->total_expenses,
+
                     'expense_category' => $expense->expense_category,
-                    'created_date'     => $expense->created_date,
-                    'updated_date'     => $expense->updated_date,
+
+                    'upload_receipt_url' =>
+                        $expense->upload_receipt
+                            ? asset($expense->upload_receipt)
+                            : null,
+
+                    'documents' => $expense->documents->map(
+                        function ($document) {
+                            return [
+                                'id' => $document->id,
+                                'file_name' => $document->file_name,
+                                'file_type' => $document->file_type,
+                                'file_url' => asset(
+                                    $document->file_path
+                                ),
+                            ];
+                        }
+                    ),
+
+                    'created_date' => $expense->created_date,
+                    'updated_date' => $expense->updated_date,
                 ],
-                'currency' => [
-                    'country'  => $balance->currency->country_name ?? null,
-                    'currency' => $balance->currency->currency ?? null,
-                    'symbol'   => $balance->currency->symbol ?? null,
-                ],
-                'daily_balance' => [
-                    'date'            => $dailyBalance->balance_date,
-                    'opening_balance' => (float) $dailyBalance->opening_balance,
-                    'total_credit'    => (float) $dailyBalance->total_credit,
-                    'total_debit'     => (float) $dailyBalance->total_debit,
-                    'closing_balance' => (float) $dailyBalance->closing_balance,
-                ]
             ], 201);
 
-        } catch (\Exception $e) {
+        } catch (ValidationException $e) {
 
-            DB::rollBack();
-
+            /*
+            |--------------------------------------------------------------------------
+            | Validation Error
+            |--------------------------------------------------------------------------
+            */
             return response()->json([
+                'success' => false,
+                'message' => 'Validation failed.',
+                'errors' => $e->errors(),
+            ], 422);
+
+        } catch (\Throwable $e) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Log Error
+            |--------------------------------------------------------------------------
+            */
+            Log::error('Expense creation failed', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Error Response
+            |--------------------------------------------------------------------------
+            */
+            return response()->json([
+                'success' => false,
                 'message' => 'Failed to add expense.',
-                'error'   => $e->getMessage(),
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
+    /*
+    |--------------------------------------------------------------------------
+    | UPDATE EXPENSE
+    |--------------------------------------------------------------------------
+    */
 
-    // =====================================
-    // UPDATE EXPENSE
-    // =====================================
-    public function updateExpense(Request $request, $sn)
+    public function updateExpense(Request $request,$sn) 
     {
-        $user = Auth::user();
 
-        if (!$user) {
-            return response()->json([
-                'message' => 'Request is not authorized'
-            ], 401);
-        }
-
-        $expense = Expense::where('sn', $sn)
-            ->where('customerid', $user->customerid)
-            ->first();
+        $expense =
+            Expense::where('sn', $sn)->first();
 
         if (!$expense) {
+
             return response()->json([
-                'message' => 'Expense not found.'
+                'message' =>
+                    'Expense not found.',
             ], 404);
         }
 
         $request->validate([
-            'add_expenses'     => 'required|numeric|min:0',
-            'expense_category' => 'required|string',
-        ]);
 
-        DB::beginTransaction();
+            'add_expenses' =>
+                'nullable|numeric',
+
+            'total_expenses' =>
+                'nullable|numeric',
+
+            'expense_category' =>
+                'nullable',
+
+            'upload_receipt' =>
+                'nullable|file|mimes:jpg,jpeg,png,pdf|max:10240',
+
+            'upload_doc' =>
+                'nullable|array',
+
+            'upload_doc.*' =>
+                'file|mimes:jpg,jpeg,png,pdf,doc,docx|max:10240',
+        ]);
 
         try {
 
-            $balance = Balance::with('currency')
-                ->where('customerid', $user->customerid)
-                ->first();
+            /*
+            |--------------------------------------------------------------------------
+            | Update Expense Information
+            |--------------------------------------------------------------------------
+            */
 
-            if (!$balance) {
-                return response()->json([
-                    'message' => 'Opening balance not found.'
-                ], 404);
+            if ($request->has('add_expenses')) {
+
+                $expense->add_expenses =
+                    $request->add_expenses;
             }
 
-            // Original values
-            $oldAmount       = (float) $expense->add_expenses;
-            $newAmount       = (float) $request->add_expenses;
-            $transactionDate = Carbon::parse($expense->created_date)->toDateString();
+            if ($request->has('total_expenses')) {
 
-            $dailyBalance = DailyBalance::where('customerid', $user->customerid)
-                ->where('balance_date', $transactionDate)
-                ->first();
+                $expense->total_expenses =
+                    $request->total_expenses;
+            }
 
-            if ($dailyBalance) {
+            if ($request->has('expense_category')) {
 
-                $availableBalance =
-                    $dailyBalance->closing_balance + $oldAmount;
+                $expense->expense_category =
+                    $request->expense_category;
+            }
 
-                if ($newAmount > $availableBalance) {
-                    return response()->json([
-                        'message' => 'Insufficient balance for updated expense.',
-                        'available_balance' => (float) $availableBalance,
-                    ], 400);
+            /*
+            |--------------------------------------------------------------------------
+            | Update Receipt
+            |--------------------------------------------------------------------------
+            */
+
+            if ($request->hasFile('upload_receipt')) {
+
+                /*
+                |--------------------------------------------------------------------------
+                | Delete Old Receipt
+                |--------------------------------------------------------------------------
+                */
+
+                if ($expense->upload_receipt) {
+
+                    $oldReceipt =
+                        public_path(
+                            'upload_receipt/' .
+                            $expense->upload_receipt
+                        );
+
+                    if (File::exists($oldReceipt)) {
+
+                        File::delete(
+                            $oldReceipt
+                        );
+                    }
                 }
 
-                // Adjust debit
-                $dailyBalance->total_debit =
-                    $dailyBalance->total_debit - $oldAmount + $newAmount;
+                /*
+                |--------------------------------------------------------------------------
+                | New Receipt
+                |--------------------------------------------------------------------------
+                */
 
-                $dailyBalance->closing_balance =
-                    $dailyBalance->opening_balance +
-                    $dailyBalance->total_credit -
-                    $dailyBalance->total_debit;
+                $receipt =
+                    $request->file(
+                        'upload_receipt'
+                    );
 
-                $dailyBalance->save();
+                $receiptFolder =
+                    public_path(
+                        'upload_receipt'
+                    );
+
+                if (!File::exists($receiptFolder)) {
+
+                    File::makeDirectory(
+                        $receiptFolder,
+                        0755,
+                        true
+                    );
+                }
+
+                $receiptName =
+                    time() . '_' .
+                    uniqid() . '.' .
+                    $receipt->getClientOriginalExtension();
+
+                $receipt->move(
+                    $receiptFolder,
+                    $receiptName
+                );
+
+                $expense->upload_receipt =
+                    $receiptName;
             }
 
-            // Update expense
-            $expense->add_expenses     = $newAmount;
-            $expense->expense_category = $request->expense_category;
-            $expense->updated_date     = now()->toDateString();
+            /*
+            |--------------------------------------------------------------------------
+            | Update Multiple Documents
+            |--------------------------------------------------------------------------
+            */
 
-            // Recalculate cumulative total expenses
-            $totalExpenses = Expense::where('customerid', $user->customerid)
-                ->where('id', '!=', $expense->id)
-                ->sum('add_expenses') + $newAmount;
+            if ($request->hasFile('upload_doc')) {
 
-            $expense->total_expenses = $totalExpenses;
+                /*
+                |--------------------------------------------------------------------------
+                | Get Old Documents
+                |--------------------------------------------------------------------------
+                */
+
+                $oldDocuments =
+                    ExpenseDocument::where(
+                        'expense_sn',
+                        $expense->sn
+                    )->get();
+
+                /*
+                |--------------------------------------------------------------------------
+                | Delete Old Files
+                |--------------------------------------------------------------------------
+                */
+
+                foreach (
+                    $oldDocuments
+                    as $oldDocument
+                ) {
+
+                    $oldFile =
+                        public_path(
+                            $oldDocument->file_path
+                        );
+
+                    if (File::exists($oldFile)) {
+
+                        File::delete(
+                            $oldFile
+                        );
+                    }
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Delete Old Database Records
+                |--------------------------------------------------------------------------
+                */
+
+                ExpenseDocument::where(
+                    'expense_sn',
+                    $expense->sn
+                )->delete();
+
+                /*
+                |--------------------------------------------------------------------------
+                | Upload New Documents
+                |--------------------------------------------------------------------------
+                */
+
+                $documentFolder =
+                    public_path(
+                        'upload_doc'
+                    );
+
+                if (!File::exists($documentFolder)) {
+
+                    File::makeDirectory(
+                        $documentFolder,
+                        0755,
+                        true
+                    );
+                }
+
+                foreach (
+                    $request->file('upload_doc')
+                    as $document
+                ) {
+
+                    $documentName =
+                        time() . '_' .
+                        uniqid() . '.' .
+                        $document->getClientOriginalExtension();
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Move File
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $document->move(
+                        $documentFolder,
+                        $documentName
+                    );
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Create Database Record
+                    |--------------------------------------------------------------------------
+                    */
+
+                    ExpenseDocument::create([
+                        'expense_sn' =>
+                            $expense->sn,
+
+                        'file_name' =>
+                            $documentName,
+
+                        'file_path' =>
+                            'upload_doc/' .
+                            $documentName,
+
+                        'file_type' =>
+                            $document
+                                ->getClientOriginalExtension(),
+                    ]);
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Updated Date
+            |--------------------------------------------------------------------------
+            */
+
+            $expense->updated_date =
+                now();
 
             $expense->save();
 
-            DB::commit();
+            /*
+            |--------------------------------------------------------------------------
+            | Load Documents
+            |--------------------------------------------------------------------------
+            */
+
+            $expense->load('documents');
+
+            /*
+            |--------------------------------------------------------------------------
+            | URLs
+            |--------------------------------------------------------------------------
+            */
+
+            $expense->upload_receipt_url =
+                $expense->upload_receipt
+                    ? url(
+                        'upload_receipt/' .
+                        $expense->upload_receipt
+                    )
+                    : null;
+
+            foreach (
+                $expense->documents
+                as $document
+            ) {
+
+                $document->file_url =
+                    url($document->file_path);
+            }
 
             return response()->json([
-                'message' => 'Expense updated successfully.',
+                'message' =>
+                    'Expense updated successfully.',
 
-                'expense' => [
-                    'id'               => $expense->id,
-                    'sn'               => $expense->sn,
-                    'customerid'       => $expense->customerid,
-                    'add_expenses'     => (float) $expense->add_expenses,
-                    'total_expenses'   => (float) $expense->total_expenses,
-                    'expense_category' => $expense->expense_category,
-                    'created_date'     => $expense->created_date,
-                    'updated_date'     => $expense->updated_date,
-                ],
-
-                'currency' => [
-                    'country'  => $balance->currency->country_name ?? null,
-                    'currency' => $balance->currency->currency ?? null,
-                    'symbol'   => $balance->currency->symbol ?? null,
-                ],
-
-                'daily_balance' => $dailyBalance ? [
-                    'date'            => $dailyBalance->balance_date,
-                    'opening_balance' => (float) $dailyBalance->opening_balance,
-                    'total_credit'    => (float) $dailyBalance->total_credit,
-                    'total_debit'     => (float) $dailyBalance->total_debit,
-                    'closing_balance' => (float) $dailyBalance->closing_balance,
-                ] : null,
+                'data' =>
+                    $expense,
             ]);
 
         } catch (\Exception $e) {
 
-            DB::rollBack();
-
             return response()->json([
-                'message' => 'Failed to update expense.',
-                'error'   => $e->getMessage(),
+                'message' =>
+                    'Failed to update expense.',
+
+                'error' =>
+                    $e->getMessage(),
             ], 500);
         }
     }
 
-    // =====================================
-    // DELETE EXPENSE
-    // =====================================
-    public function deleteExpense($sn)
+    /*
+    |--------------------------------------------------------------------------
+    | GET SINGLE EXPENSE
+    |--------------------------------------------------------------------------
+    */
+
+    public function getExpense($sn)
     {
-        $user = Auth::user();
-
-        if (!$user) {
-            return response()->json([
-                'message' => 'Request is not authorized'
-            ], 401);
-        }
-
-        $expense = Expense::where('sn', $sn)
-            ->where('customerid', $user->customerid)
-            ->first();
+        $expense =
+            Expense::with('documents')
+                ->where('sn', $sn)
+                ->first();
 
         if (!$expense) {
+
             return response()->json([
-                'message' => 'Expense not found.'
+                'message' =>
+                    'Expense not found.',
             ], 404);
         }
 
-        DB::beginTransaction();
+        /*
+        |--------------------------------------------------------------------------
+        | Receipt URL
+        |--------------------------------------------------------------------------
+        */
+
+        $expense->upload_receipt_url =
+            $expense->upload_receipt
+                ? url(
+                    'upload_receipt/' .
+                    $expense->upload_receipt
+                )
+                : null;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Document URLs
+        |--------------------------------------------------------------------------
+        */
+
+        foreach (
+            $expense->documents
+            as $document
+        ) {
+
+            $document->file_url =
+                url($document->file_path);
+        }
+
+        return response()->json([
+            'message' =>
+                'Expense retrieved successfully.',
+
+            'data' =>
+                $expense,
+        ]);
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | GET EXPENSE LIST
+    |--------------------------------------------------------------------------
+    */
+
+    public function getExpenseList( Request $request ) 
+    {
+
+        $query =
+            Expense::with('documents');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Customer Filter
+        |--------------------------------------------------------------------------
+        */
+
+        if ($request->filled('customerid')) {
+
+            $query->where(
+                'customerid',
+                $request->customerid
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Get Expenses
+        |--------------------------------------------------------------------------
+        */
+
+        $expenses =
+            $query
+                ->orderBy(
+                    'created_date',
+                    'desc'
+                )
+                ->get();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Add URLs
+        |--------------------------------------------------------------------------
+        */
+
+        foreach (
+            $expenses
+            as $expense
+        ) {
+
+            /*
+            | Receipt
+            */
+
+            $expense->upload_receipt_url =
+                $expense->upload_receipt
+                    ? url(
+                        'upload_receipt/' .
+                        $expense->upload_receipt
+                    )
+                    : null;
+
+            /*
+            | Documents
+            */
+
+            foreach (
+                $expense->documents
+                as $document
+            ) {
+
+                $document->file_url =
+                    url(
+                        $document->file_path
+                    );
+            }
+        }
+
+        return response()->json([
+            'message' =>
+                'Expense list retrieved successfully.',
+
+            'data' =>
+                $expenses,
+        ]);
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | DELETE EXPENSE
+    |--------------------------------------------------------------------------
+    */
+
+    public function deleteExpense($sn)
+    {
+        $expense =
+            Expense::where('sn', $sn)->first();
+
+        if (!$expense) {
+
+            return response()->json([
+                'message' =>
+                    'Expense not found.',
+            ], 404);
+        }
 
         try {
 
-            $balance = Balance::with('currency')
-                ->where('customerid', $user->customerid)
-                ->first();
+            /*
+            |--------------------------------------------------------------------------
+            | Delete Receipt
+            |--------------------------------------------------------------------------
+            */
 
-            if (!$balance) {
-                return response()->json([
-                    'message' => 'Opening balance not found.'
-                ], 404);
-            }
+            if ($expense->upload_receipt) {
 
-            $amount = (float) $expense->add_expenses;
+                $receiptPath =
+                    public_path(
+                        'upload_receipt/' .
+                        $expense->upload_receipt
+                    );
 
-            $transactionDate = Carbon::parse($expense->created_date)->toDateString();
+                if (File::exists($receiptPath)) {
 
-            // Update daily balance
-            $dailyBalance = DailyBalance::where('customerid', $user->customerid)
-                ->where('balance_date', $transactionDate)
-                ->first();
-
-            if ($dailyBalance) {
-
-                $dailyBalance->total_debit -= $amount;
-
-                if ($dailyBalance->total_debit < 0) {
-                    $dailyBalance->total_debit = 0;
+                    File::delete(
+                        $receiptPath
+                    );
                 }
-
-                $dailyBalance->closing_balance =
-                    $dailyBalance->opening_balance +
-                    $dailyBalance->total_credit -
-                    $dailyBalance->total_debit;
-
-                $dailyBalance->save();
             }
 
-            // Delete expense
+            /*
+            |--------------------------------------------------------------------------
+            | Get Documents
+            |--------------------------------------------------------------------------
+            */
+
+            $documents =
+                ExpenseDocument::where(
+                    'expense_sn',
+                    $expense->sn
+                )->get();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Delete Document Files
+            |--------------------------------------------------------------------------
+            */
+
+            foreach (
+                $documents
+                as $document
+            ) {
+
+                $documentPath =
+                    public_path(
+                        $document->file_path
+                    );
+
+                if (File::exists($documentPath)) {
+
+                    File::delete(
+                        $documentPath
+                    );
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Delete Document Records
+            |--------------------------------------------------------------------------
+            */
+
+            ExpenseDocument::where(
+                'expense_sn',
+                $expense->sn
+            )->delete();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Delete Expense
+            |--------------------------------------------------------------------------
+            */
+
             $expense->delete();
 
-            // Recalculate total expenses
-            $newTotalExpenses = (float) Expense::where('customerid', $user->customerid)
-                ->sum('add_expenses');
-
-            DB::commit();
-
             return response()->json([
-                'message' => 'Expense deleted successfully.',
-
-                'total_expenses' => $newTotalExpenses,
-
-                'currency' => [
-                    'country'  => $balance->currency->country_name ?? null,
-                    'currency' => $balance->currency->currency ?? null,
-                    'symbol'   => $balance->currency->symbol ?? null,
-                ],
-
-                'daily_balance' => $dailyBalance ? [
-                    'date'            => $dailyBalance->balance_date,
-                    'opening_balance' => (float) $dailyBalance->opening_balance,
-                    'total_credit'    => (float) $dailyBalance->total_credit,
-                    'total_debit'     => (float) $dailyBalance->total_debit,
-                    'closing_balance' => (float) $dailyBalance->closing_balance,
-                ] : null,
+                'message' =>
+                    'Expense deleted successfully.',
             ]);
 
         } catch (\Exception $e) {
 
-            DB::rollBack();
-
             return response()->json([
-                'message' => 'Failed to delete expense.',
-                'error'   => $e->getMessage(),
+                'message' =>
+                    'Failed to delete expense.',
+
+                'error' =>
+                    $e->getMessage(),
             ], 500);
         }
-    }
-
-
-    // =====================================
-    // FILTER EXPENSES (date, category, daily/weekly/monthly/yearly)
-    // =====================================
-    public function getExpenseLists(Request $request)
-    {
-    $user  = Auth::user();
-    $query = Expense::where('customerid', $user->customerid);
-
-    // Date range filter
-    if ($request->has(['start_date', 'end_date']) && $request->start_date && $request->end_date) {
-        $query->whereBetween('created_date', [
-            $request->start_date,
-            $request->end_date
-        ]);
-    }
-
-    // Daily / Weekly / Monthly / Yearly filter
-    if ($request->has('filter_type') && $request->filter_type !== null) {
-
-        $filter = $request->filter_type;
-        $today  = now();
-
-        if ($filter === 'daily') {
-            $query->whereDate('created_date', $today->toDateString());
-        }
-
-        if ($filter === 'weekly') {
-            $query->whereBetween('created_date', [
-                $today->copy()->startOfWeek()->toDateString(),
-                $today->copy()->endOfWeek()->toDateString()
-            ]);
-        }
-
-        if ($filter === 'monthly') {
-            $query->whereYear('created_date', $today->year)
-                  ->whereMonth('created_date', $today->month);
-        }
-
-        if ($filter === 'yearly') {
-            $query->whereYear('created_date', $today->year);
-        }
-    }
-
-    // Expense category filter
-    if ($request->has('expense_category') && $request->expense_category !== null) {
-        $query->where('expense_category', $request->expense_category);
-    }
-
-    // Sort ascending for running total
-    $expenses = $query->orderBy('created_date', 'ASC')->get();
-
-    // Running total
-    $runningTotal = 0;
-    foreach ($expenses as $exp) {
-        $runningTotal += (float) $exp->add_expenses;
-        $exp->total_expenses = $runningTotal;
-    }
-
-    // Currency
-    $balance  = Balance::where('customerid', $user->customerid)
-        ->with('currency')
-        ->first();
-
-    $currency = $balance->currency ?? null;
-
-    return response()->json([
-        'message'          => 'Expense list fetched successfully.',
-        'filter_type'      => $request->filter_type ?? null,
-        'start_date'       => $request->start_date ?? null,
-        'end_date'         => $request->end_date ?? null,
-        'expense_category' => $request->expense_category ?? null,
-        'currency'         => $currency->currency ?? null,
-        'symbol'           => $currency->symbol ?? null,
-        'data'             => $expenses,
-    ]);
-}
-
-    // =====================================
-    // GET TOTAL EXPENSES
-    // =====================================
-    public function getTotalExpenses(Request $request)
-    {
-        $user = Auth::user();
-    
-        if (!$user) {
-            return response()->json([
-                'message' => 'Request is not authorized'
-            ], 401);
-        }
-    
-        $filter = $request->filter ?? 'all';
-    
-        $query = Expense::where('customerid', $user->customerid);
-    
-        $today = Carbon::now();
-    
-        switch ($filter) {
-    
-            case 'daily':
-    
-                $query->whereDate('created_date', $today->toDateString());
-    
-                break;
-    
-            case 'weekly':
-    
-                $startWeek = $today->copy()->startOfWeek()->toDateString();
-                $endWeek   = $today->copy()->endOfWeek()->toDateString();
-    
-                $query->whereBetween(
-                    DB::raw('DATE(created_date)'),
-                    [$startWeek, $endWeek]
-                );
-    
-                break;
-    
-            case 'monthly':
-    
-                $query->whereMonth('created_date', $today->month)
-                    ->whereYear('created_date', $today->year);
-    
-                break;
-    
-            case 'yearly':
-    
-                $query->whereYear('created_date', $today->year);
-    
-                break;
-    
-            case 'all':
-            default:
-                // No filter
-                break;
-        }
-    
-        $totalExpenses = (float) $query->sum('add_expenses');
-    
-        /**
-         * Currency from master balance
-         */
-        $balance = Balance::with('currency')
-            ->where('customerid', $user->customerid)
-            ->first();
-    
-        return response()->json([
-            'message' => 'Total expenses fetched successfully.',
-    
-            'filter_type' => $filter,
-    
-            'total_expenses' => $totalExpenses,
-    
-            'currency' => [
-                'country'  => $balance->currency->country_name ?? null,
-                'currency' => $balance->currency->currency ?? null,
-                'symbol'   => $balance->currency->symbol ?? null,
-            ],
-        ]);
-    }
-
-    // =====================================
-    // DAILY EXPENSE GRAPH
-    // =====================================
-    public function getDailyExpenseGraph(Request $request)
-    {
-        $user = Auth::user();
-
-        if (!$user) {
-            return response()->json([
-                'message' => 'Request is not authorized'
-            ], 401);
-        }
-
-        // Last 30 days including today
-        $endDate   = Carbon::today();
-        $startDate = Carbon::today()->subDays(29);
-
-        $expenses = Expense::where('customerid', $user->customerid)
-            ->whereBetween(
-                DB::raw('DATE(created_date)'),
-                [$startDate->toDateString(), $endDate->toDateString()]
-            )
-            ->selectRaw('DATE(created_date) as date, SUM(add_expenses) as total')
-            ->groupBy('date')
-            ->orderBy('date')
-            ->get()
-            ->keyBy('date');
-
-        $graphData = [];
-        $dates     = [];
-        $totals    = [];
-
-        for ($date = $startDate->copy(); $date->lte($endDate); $date->addDay()) {
-
-            $dateStr = $date->format('Y-m-d');
-
-            $total = isset($expenses[$dateStr])
-                ? (float) $expenses[$dateStr]->total
-                : 0;
-
-            $graphData[] = [
-                'date'  => $dateStr,
-                'total' => $total,
-            ];
-
-            // Backward compatibility
-            $dates[]  = $dateStr;
-            $totals[] = $total;
-        }
-
-        /**
-         * Currency info
-         */
-        $balance = Balance::with('currency')
-            ->where('customerid', $user->customerid)
-            ->first();
-
-        return response()->json([
-            'message' => 'Daily expense graph fetched successfully.',
-
-            'start_date' => $startDate->toDateString(),
-            'end_date'   => $endDate->toDateString(),
-
-            'currency' => [
-                'country'  => $balance->currency->country_name ?? null,
-                'currency' => $balance->currency->currency ?? null,
-                'symbol'   => $balance->currency->symbol ?? null,
-            ],
-
-            // Preferred structure
-            'data' => $graphData,
-
-            // Optional backward compatibility
-            'dates'  => $dates,
-            'totals' => $totals,
-        ]);
-    }
-
-    // =====================================
-    // MONTHLY EXPENSE GRAPH
-    // =====================================
-    public function getMonthlyExpenseGraph(Request $request)
-    {
-        $user = Auth::user();
-
-        if (!$user) {
-            return response()->json([
-                'message' => 'Request is not authorized'
-            ], 401);
-        }
-
-        // Last 12 months including current month
-        $endDate   = Carbon::today()->endOfMonth();
-        $startDate = Carbon::today()->subMonths(11)->startOfMonth();
-
-        $expenses = Expense::where('customerid', $user->customerid)
-            ->whereBetween(
-                DB::raw('DATE(created_date)'),
-                [$startDate->toDateString(), $endDate->toDateString()]
-            )
-            ->selectRaw('YEAR(created_date) as year, MONTH(created_date) as month, SUM(add_expenses) as total')
-            ->groupBy('year', 'month')
-            ->orderBy('year')
-            ->orderBy('month')
-            ->get();
-
-        $graphData = [];
-        $months    = [];
-        $totals    = [];
-
-        for ($date = $startDate->copy(); $date->lte($endDate); $date->addMonth()) {
-
-            $year  = $date->year;
-            $month = $date->month;
-
-            $expenseForMonth = $expenses->first(function ($item) use ($year, $month) {
-                return (int) $item->year === $year
-                    && (int) $item->month === $month;
-            });
-
-            $label = $date->format('M Y'); // Aug 2026
-
-            $total = $expenseForMonth
-                ? (float) $expenseForMonth->total
-                : 0;
-
-            $graphData[] = [
-                'month' => $label,
-                'year'  => $year,
-                'total' => $total,
-            ];
-
-            // Backward compatibility
-            $months[] = $label;
-            $totals[] = $total;
-        }
-
-        /**
-         * Currency info
-         */
-        $balance = Balance::with('currency')
-            ->where('customerid', $user->customerid)
-            ->first();
-
-        return response()->json([
-            'message' => 'Monthly expense graph fetched successfully.',
-
-            'start_month' => $startDate->format('Y-m'),
-            'end_month'   => $endDate->format('Y-m'),
-
-            'currency' => [
-                'country'  => $balance->currency->country_name ?? null,
-                'currency' => $balance->currency->currency ?? null,
-                'symbol'   => $balance->currency->symbol ?? null,
-            ],
-
-            // Preferred structure
-            'data' => $graphData,
-
-            // Optional backward compatibility
-            'months' => $months,
-            'totals' => $totals,
-        ]);
-    }
-
-    // =====================================
-    // CATEGORY-WISE EXPENSES
-    // =====================================
-    public function getCategoryWiseExpenses(Request $request)
-    {
-        $user = Auth::user();
-
-        $query = Expense::where('customerid', $user->customerid);
-
-        // Date range filter
-        if ($request->has(['start_date', 'end_date']) && $request->start_date && $request->end_date) {
-            $query->whereBetween('created_date', [
-                $request->start_date,
-                $request->end_date
-            ]);
-        }
-
-        // Time filter
-        if ($request->has('filter_type') && $request->filter_type) {
-
-            $today = now();
-
-            switch ($request->filter_type) {
-
-                case 'daily':
-                    $query->whereDate('created_date', $today->toDateString());
-                    break;
-
-                case 'weekly':
-                    $query->whereBetween('created_date', [
-                        $today->copy()->startOfWeek(),
-                        $today->copy()->endOfWeek()
-                    ]);
-                    break;
-
-                case 'monthly':
-                    $query->whereMonth('created_date', $today->month)
-                        ->whereYear('created_date', $today->year);
-                    break;
-
-                case 'yearly':
-                    $query->whereYear('created_date', $today->year);
-                    break;
-            }
-        }
-
-        // Group by category
-        $categoryExpenses = $query
-            ->select('expense_category', DB::raw('SUM(add_expenses) as total_amount'))
-            ->groupBy('expense_category')
-            ->orderBy('expense_category')
-            ->get();
-
-        // Currency
-        $balance = Balance::with('currency')
-            ->where('customerid', $user->customerid)
-            ->first();
-
-        $currency = $balance->currency ?? null;
-
-        return response()->json([
-            'message'  => 'Category-wise expenses fetched successfully.',
-            'currency' => $currency->currency ?? null,
-            'symbol'   => $currency->symbol ?? null,
-            'data'     => $categoryExpenses,
-        ]);
     }
 }
