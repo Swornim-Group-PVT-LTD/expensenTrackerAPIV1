@@ -26,6 +26,7 @@ class ExpenseController extends Controller
             | Get authenticated user
             |--------------------------------------------------------------------------
             */
+
             $user = auth()->user();
 
             if (!$user) {
@@ -42,9 +43,9 @@ class ExpenseController extends Controller
             | Validation
             |--------------------------------------------------------------------------
             */
+
             $validated = $request->validate([
                 'add_expenses' => 'required|numeric|min:0',
-
                 'expense_category' => 'required|string|max:255',
 
                 'upload_receipt' => [
@@ -71,6 +72,7 @@ class ExpenseController extends Controller
             | Generate unique Expense SN
             |--------------------------------------------------------------------------
             */
+
             do {
                 $sn = 'EXP' . strtoupper(Str::random(8));
             } while (Expense::where('sn', $sn)->exists());
@@ -80,6 +82,7 @@ class ExpenseController extends Controller
             | Create Expense
             |--------------------------------------------------------------------------
             */
+
             $expense = Expense::create([
                 'sn' => $sn,
                 'customerid' => $customerid,
@@ -96,8 +99,8 @@ class ExpenseController extends Controller
             | Upload Receipt
             |--------------------------------------------------------------------------
             */
-            if ($request->hasFile('upload_receipt')) {
 
+            if ($request->hasFile('upload_receipt')) {
                 $receipt = $request->file('upload_receipt');
 
                 $receiptDirectory = public_path('upload_receipt');
@@ -129,6 +132,7 @@ class ExpenseController extends Controller
             | Calculate Total Expenses
             |--------------------------------------------------------------------------
             */
+
             $totalExpenses = Expense::where(
                 'customerid',
                 $customerid
@@ -144,8 +148,8 @@ class ExpenseController extends Controller
             | Upload Multiple Documents
             |--------------------------------------------------------------------------
             */
-            if ($request->hasFile('upload_doc')) {
 
+            if ($request->hasFile('upload_doc')) {
                 $documentDirectory = public_path('upload_doc');
 
                 if (!File::exists($documentDirectory)) {
@@ -157,7 +161,6 @@ class ExpenseController extends Controller
                 }
 
                 foreach ($request->file('upload_doc') as $document) {
-
                     $documentName = time() . '_' .
                         Str::random(10) . '.' .
                         $document->getClientOriginalExtension();
@@ -181,6 +184,7 @@ class ExpenseController extends Controller
             | Reload Expense
             |--------------------------------------------------------------------------
             */
+
             $expense->refresh();
 
             $expense->load('documents');
@@ -190,19 +194,16 @@ class ExpenseController extends Controller
             | Success Response
             |--------------------------------------------------------------------------
             */
+
             return response()->json([
                 'success' => true,
                 'message' => 'Expense added successfully.',
 
                 'data' => [
                     'sn' => $expense->sn,
-
                     'customerid' => $expense->customerid,
-
                     'add_expenses' => $expense->add_expenses,
-
                     'total_expenses' => $expense->total_expenses,
-
                     'expense_category' => $expense->expense_category,
 
                     'upload_receipt_url' =>
@@ -229,12 +230,12 @@ class ExpenseController extends Controller
             ], 201);
 
         } catch (ValidationException $e) {
-
             /*
             |--------------------------------------------------------------------------
             | Validation Error
             |--------------------------------------------------------------------------
             */
+
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed.',
@@ -242,12 +243,12 @@ class ExpenseController extends Controller
             ], 422);
 
         } catch (\Throwable $e) {
-
             /*
             |--------------------------------------------------------------------------
             | Log Error
             |--------------------------------------------------------------------------
             */
+
             Log::error('Expense creation failed', [
                 'message' => $e->getMessage(),
                 'file' => $e->getFile(),
@@ -259,6 +260,7 @@ class ExpenseController extends Controller
             | Error Response
             |--------------------------------------------------------------------------
             */
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to add expense.',
@@ -266,48 +268,87 @@ class ExpenseController extends Controller
             ], 500);
         }
     }
+
     /*
     |--------------------------------------------------------------------------
     | UPDATE EXPENSE
     |--------------------------------------------------------------------------
     */
 
-    public function updateExpense(Request $request,$sn) 
+    public function updateExpense(Request $request, $sn)
     {
-
-        $expense =
-            Expense::where('sn', $sn)->first();
-
-        if (!$expense) {
-
-            return response()->json([
-                'message' =>
-                    'Expense not found.',
-            ], 404);
-        }
-
-        $request->validate([
-
-            'add_expenses' =>
-                'nullable|numeric',
-
-            'total_expenses' =>
-                'nullable|numeric',
-
-            'expense_category' =>
-                'nullable',
-
-            'upload_receipt' =>
-                'nullable|file|mimes:jpg,jpeg,png,pdf|max:10240',
-
-            'upload_doc' =>
-                'nullable|array',
-
-            'upload_doc.*' =>
-                'file|mimes:jpg,jpeg,png,pdf,doc,docx|max:10240',
-        ]);
-
         try {
+            /*
+            |--------------------------------------------------------------------------
+            | Get authenticated user
+            |--------------------------------------------------------------------------
+            */
+
+            $user = auth()->user();
+
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthenticated user.',
+                ], 401);
+            }
+
+            $customerid = $user->customerid;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Find Expense
+            |--------------------------------------------------------------------------
+            */
+
+            $expense = Expense::where('sn', $sn)
+                ->where('customerid', $customerid)
+                ->first();
+
+            if (!$expense) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Expense not found.',
+                ], 404);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validation
+            |--------------------------------------------------------------------------
+            */
+
+            $validated = $request->validate([
+                'add_expenses' => [
+                    'nullable',
+                    'numeric',
+                    'min:0',
+                ],
+
+                'expense_category' => [
+                    'nullable',
+                    'string',
+                    'max:255',
+                ],
+
+                'upload_receipt' => [
+                    'nullable',
+                    'file',
+                    'mimes:jpg,jpeg,png,pdf',
+                    'max:10240',
+                ],
+
+                'upload_doc' => [
+                    'nullable',
+                    'array',
+                ],
+
+                'upload_doc.*' => [
+                    'file',
+                    'mimes:jpg,jpeg,png,pdf,doc,docx',
+                    'max:10240',
+                ],
+            ]);
 
             /*
             |--------------------------------------------------------------------------
@@ -315,22 +356,12 @@ class ExpenseController extends Controller
             |--------------------------------------------------------------------------
             */
 
-            if ($request->has('add_expenses')) {
-
-                $expense->add_expenses =
-                    $request->add_expenses;
+            if ($request->filled('add_expenses')) {
+                $expense->add_expenses = $request->add_expenses;
             }
 
-            if ($request->has('total_expenses')) {
-
-                $expense->total_expenses =
-                    $request->total_expenses;
-            }
-
-            if ($request->has('expense_category')) {
-
-                $expense->expense_category =
-                    $request->expense_category;
+            if ($request->filled('expense_category')) {
+                $expense->expense_category = $request->expense_category;
             }
 
             /*
@@ -340,7 +371,6 @@ class ExpenseController extends Controller
             */
 
             if ($request->hasFile('upload_receipt')) {
-
                 /*
                 |--------------------------------------------------------------------------
                 | Delete Old Receipt
@@ -348,39 +378,24 @@ class ExpenseController extends Controller
                 */
 
                 if ($expense->upload_receipt) {
+                    $oldReceiptPath = public_path(
+                        $expense->upload_receipt
+                    );
 
-                    $oldReceipt =
-                        public_path(
-                            'upload_receipt/' .
-                            $expense->upload_receipt
-                        );
-
-                    if (File::exists($oldReceipt)) {
-
-                        File::delete(
-                            $oldReceipt
-                        );
+                    if (File::exists($oldReceiptPath)) {
+                        File::delete($oldReceiptPath);
                     }
                 }
 
                 /*
                 |--------------------------------------------------------------------------
-                | New Receipt
+                | Create Receipt Folder
                 |--------------------------------------------------------------------------
                 */
 
-                $receipt =
-                    $request->file(
-                        'upload_receipt'
-                    );
-
-                $receiptFolder =
-                    public_path(
-                        'upload_receipt'
-                    );
+                $receiptFolder = public_path('upload_receipt');
 
                 if (!File::exists($receiptFolder)) {
-
                     File::makeDirectory(
                         $receiptFolder,
                         0755,
@@ -388,9 +403,16 @@ class ExpenseController extends Controller
                     );
                 }
 
-                $receiptName =
-                    time() . '_' .
-                    uniqid() . '.' .
+                /*
+                |--------------------------------------------------------------------------
+                | Upload New Receipt
+                |--------------------------------------------------------------------------
+                */
+
+                $receipt = $request->file('upload_receipt');
+
+                $receiptName = time() . '_' .
+                    Str::random(10) . '.' .
                     $receipt->getClientOriginalExtension();
 
                 $receipt->move(
@@ -398,9 +420,48 @@ class ExpenseController extends Controller
                     $receiptName
                 );
 
+                /*
+                |--------------------------------------------------------------------------
+                | Save Receipt Path
+                |--------------------------------------------------------------------------
+                */
+
                 $expense->upload_receipt =
-                    $receiptName;
+                    'upload_receipt/' . $receiptName;
             }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Update Total Expenses Automatically
+            |--------------------------------------------------------------------------
+            |
+            | total_expenses is NOT accepted from the request.
+            | It is calculated automatically for this customer.
+            |
+            */
+
+            $expense->total_expenses =
+                Expense::where(
+                    'customerid',
+                    $customerid
+                )
+                    ->where(
+                        'sn',
+                        '!=',
+                        $expense->sn
+                    )
+                    ->sum('add_expenses')
+                + (float) $expense->add_expenses;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Updated Date
+            |--------------------------------------------------------------------------
+            */
+
+            $expense->updated_date = now();
+
+            $expense->save();
 
             /*
             |--------------------------------------------------------------------------
@@ -409,40 +470,30 @@ class ExpenseController extends Controller
             */
 
             if ($request->hasFile('upload_doc')) {
-
                 /*
                 |--------------------------------------------------------------------------
                 | Get Old Documents
                 |--------------------------------------------------------------------------
                 */
 
-                $oldDocuments =
-                    ExpenseDocument::where(
-                        'expense_sn',
-                        $expense->sn
-                    )->get();
+                $oldDocuments = ExpenseDocument::where(
+                    'expense_sn',
+                    $expense->sn
+                )->get();
 
                 /*
                 |--------------------------------------------------------------------------
-                | Delete Old Files
+                | Delete Old Physical Files
                 |--------------------------------------------------------------------------
                 */
 
-                foreach (
-                    $oldDocuments
-                    as $oldDocument
-                ) {
+                foreach ($oldDocuments as $oldDocument) {
+                    $oldFilePath = public_path(
+                        $oldDocument->file_path
+                    );
 
-                    $oldFile =
-                        public_path(
-                            $oldDocument->file_path
-                        );
-
-                    if (File::exists($oldFile)) {
-
-                        File::delete(
-                            $oldFile
-                        );
+                    if (File::exists($oldFilePath)) {
+                        File::delete($oldFilePath);
                     }
                 }
 
@@ -459,17 +510,13 @@ class ExpenseController extends Controller
 
                 /*
                 |--------------------------------------------------------------------------
-                | Upload New Documents
+                | Create Document Folder
                 |--------------------------------------------------------------------------
                 */
 
-                $documentFolder =
-                    public_path(
-                        'upload_doc'
-                    );
+                $documentFolder = public_path('upload_doc');
 
                 if (!File::exists($documentFolder)) {
-
                     File::makeDirectory(
                         $documentFolder,
                         0755,
@@ -477,21 +524,18 @@ class ExpenseController extends Controller
                     );
                 }
 
+                /*
+                |--------------------------------------------------------------------------
+                | Upload New Documents
+                |--------------------------------------------------------------------------
+                */
+
                 foreach (
-                    $request->file('upload_doc')
-                    as $document
+                    $request->file('upload_doc') as $document
                 ) {
-
-                    $documentName =
-                        time() . '_' .
-                        uniqid() . '.' .
+                    $documentName = time() . '_' .
+                        Str::random(10) . '.' .
                         $document->getClientOriginalExtension();
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Move File
-                    |--------------------------------------------------------------------------
-                    */
 
                     $document->move(
                         $documentFolder,
@@ -505,81 +549,87 @@ class ExpenseController extends Controller
                     */
 
                     ExpenseDocument::create([
-                        'expense_sn' =>
-                            $expense->sn,
-
-                        'file_name' =>
-                            $documentName,
-
-                        'file_path' =>
-                            'upload_doc/' .
-                            $documentName,
-
-                        'file_type' =>
-                            $document
-                                ->getClientOriginalExtension(),
+                        'expense_sn' => $expense->sn,
+                        'file_name' => $documentName,
+                        'file_path' => 'upload_doc/' . $documentName,
+                        'file_type' => $document->getClientMimeType(),
                     ]);
                 }
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Updated Date
+            | Reload Expense
             |--------------------------------------------------------------------------
             */
 
-            $expense->updated_date =
-                now();
-
-            $expense->save();
-
-            /*
-            |--------------------------------------------------------------------------
-            | Load Documents
-            |--------------------------------------------------------------------------
-            */
+            $expense->refresh();
 
             $expense->load('documents');
 
             /*
             |--------------------------------------------------------------------------
-            | URLs
+            | Receipt URL
             |--------------------------------------------------------------------------
             */
 
             $expense->upload_receipt_url =
                 $expense->upload_receipt
-                    ? url(
-                        'upload_receipt/' .
-                        $expense->upload_receipt
-                    )
+                    ? asset($expense->upload_receipt)
                     : null;
 
-            foreach (
-                $expense->documents
-                as $document
-            ) {
+            /*
+            |--------------------------------------------------------------------------
+            | Document URLs
+            |--------------------------------------------------------------------------
+            */
 
+            foreach ($expense->documents as $document) {
                 $document->file_url =
-                    url($document->file_path);
+                    asset($document->file_path);
             }
 
-            return response()->json([
-                'message' =>
-                    'Expense updated successfully.',
+            /*
+            |--------------------------------------------------------------------------
+            | Response
+            |--------------------------------------------------------------------------
+            */
 
-                'data' =>
-                    $expense,
+            return response()->json([
+                'success' => true,
+                'message' => 'Expense updated successfully.',
+
+                'data' => [
+                    'sn' => $expense->sn,
+                    'customerid' => $expense->customerid,
+                    'add_expenses' => $expense->add_expenses,
+                    'total_expenses' => $expense->total_expenses,
+                    'expense_category' => $expense->expense_category,
+                    'upload_receipt_url' => $expense->upload_receipt_url,
+                    'documents' => $expense->documents,
+                    'created_date' => $expense->created_date,
+                    'updated_date' => $expense->updated_date,
+                ],
             ]);
 
-        } catch (\Exception $e) {
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed.',
+                'errors' => $e->errors(),
+            ], 422);
+
+        } catch (\Throwable $e) {
+            Log::error('Expense update failed', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
 
             return response()->json([
-                'message' =>
-                    'Failed to update expense.',
-
-                'error' =>
-                    $e->getMessage(),
+                'success' => false,
+                'message' => 'Failed to update expense.',
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
@@ -592,57 +642,102 @@ class ExpenseController extends Controller
 
     public function getExpense($sn)
     {
-        $expense =
-            Expense::with('documents')
+        try {
+            /*
+            |--------------------------------------------------------------------------
+            | Authenticated User
+            |--------------------------------------------------------------------------
+            */
+
+            $user = auth()->user();
+
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthenticated user.',
+                ], 401);
+            }
+
+            $customerid = $user->customerid;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Get Expense
+            |--------------------------------------------------------------------------
+            */
+
+            $expense = Expense::with('documents')
                 ->where('sn', $sn)
+                ->where('customerid', $customerid)
                 ->first();
 
-        if (!$expense) {
+            if (!$expense) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Expense not found.',
+                ], 404);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Receipt URL
+            |--------------------------------------------------------------------------
+            */
+
+            $expense->upload_receipt_url =
+                $expense->upload_receipt
+                    ? asset($expense->upload_receipt)
+                    : null;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Document URLs
+            |--------------------------------------------------------------------------
+            */
+
+            foreach ($expense->documents as $document) {
+                $document->file_url =
+                    asset($document->file_path);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Response
+            |--------------------------------------------------------------------------
+            */
 
             return response()->json([
+                'success' => true,
                 'message' =>
-                    'Expense not found.',
-            ], 404);
+                    'Expense retrieved successfully.',
+
+                'data' => [
+                    'sn' => $expense->sn,
+                    'customerid' => $expense->customerid,
+                    'add_expenses' => $expense->add_expenses,
+                    'total_expenses' => $expense->total_expenses,
+                    'expense_category' => $expense->expense_category,
+                    'upload_receipt_url' => $expense->upload_receipt_url,
+                    'documents' => $expense->documents,
+                    'created_date' => $expense->created_date,
+                    'updated_date' => $expense->updated_date,
+                ],
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('Get expense failed', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to retrieve expense.',
+                'error' => $e->getMessage(),
+            ], 500);
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Receipt URL
-        |--------------------------------------------------------------------------
-        */
-
-        $expense->upload_receipt_url =
-            $expense->upload_receipt
-                ? url(
-                    'upload_receipt/' .
-                    $expense->upload_receipt
-                )
-                : null;
-
-        /*
-        |--------------------------------------------------------------------------
-        | Document URLs
-        |--------------------------------------------------------------------------
-        */
-
-        foreach (
-            $expense->documents
-            as $document
-        ) {
-
-            $document->file_url =
-                url($document->file_path);
-        }
-
-        return response()->json([
-            'message' =>
-                'Expense retrieved successfully.',
-
-            'data' =>
-                $expense,
-        ]);
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -650,88 +745,121 @@ class ExpenseController extends Controller
     |--------------------------------------------------------------------------
     */
 
-    public function getExpenseList( Request $request ) 
+    public function getExpenseList(Request $request)
     {
+        try {
+            /*
+            |--------------------------------------------------------------------------
+            | Authenticated User
+            |--------------------------------------------------------------------------
+            */
 
-        $query =
-            Expense::with('documents');
+            $user = auth()->user();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Customer Filter
-        |--------------------------------------------------------------------------
-        */
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthenticated user.',
+                ], 401);
+            }
 
-        if ($request->filled('customerid')) {
+            $customerid = $user->customerid;
 
-            $query->where(
-                'customerid',
-                $request->customerid
-            );
-        }
+            /*
+            |--------------------------------------------------------------------------
+            | Query
+            |--------------------------------------------------------------------------
+            */
 
-        /*
-        |--------------------------------------------------------------------------
-        | Get Expenses
-        |--------------------------------------------------------------------------
-        */
+            $query = Expense::with('documents')
+                ->where(
+                    'customerid',
+                    $customerid
+                );
 
-        $expenses =
-            $query
+            /*
+            |--------------------------------------------------------------------------
+            | Optional Category Filter
+            |--------------------------------------------------------------------------
+            */
+
+            if ($request->filled('expense_category')) {
+                $query->where(
+                    'expense_category',
+                    $request->expense_category
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Get Expenses
+            |--------------------------------------------------------------------------
+            */
+
+            $expenses = $query
                 ->orderBy(
                     'created_date',
                     'desc'
                 )
                 ->get();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Add URLs
-        |--------------------------------------------------------------------------
-        */
-
-        foreach (
-            $expenses
-            as $expense
-        ) {
-
             /*
-            | Receipt
+            |--------------------------------------------------------------------------
+            | Add URLs
+            |--------------------------------------------------------------------------
             */
 
-            $expense->upload_receipt_url =
-                $expense->upload_receipt
-                    ? url(
-                        'upload_receipt/' .
-                        $expense->upload_receipt
-                    )
-                    : null;
+            foreach ($expenses as $expense) {
+                /*
+                |--------------------------------------------------------------------------
+                | Receipt URL
+                |--------------------------------------------------------------------------
+                */
 
-            /*
-            | Documents
-            */
+                $expense->upload_receipt_url =
+                    $expense->upload_receipt
+                        ? asset($expense->upload_receipt)
+                        : null;
 
-            foreach (
-                $expense->documents
-                as $document
-            ) {
+                /*
+                |--------------------------------------------------------------------------
+                | Document URLs
+                |--------------------------------------------------------------------------
+                */
 
-                $document->file_url =
-                    url(
-                        $document->file_path
-                    );
+                foreach ($expense->documents as $document) {
+                    $document->file_url =
+                        asset($document->file_path);
+                }
             }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Response
+            |--------------------------------------------------------------------------
+            */
+
+            return response()->json([
+                'success' => true,
+                'message' =>
+                    'Expense list retrieved successfully.',
+                'data' => $expenses,
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('Get expense list failed', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to retrieve expense list.',
+                'error' => $e->getMessage(),
+            ], 500);
         }
-
-        return response()->json([
-            'message' =>
-                'Expense list retrieved successfully.',
-
-            'data' =>
-                $expenses,
-        ]);
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -741,19 +869,15 @@ class ExpenseController extends Controller
 
     public function deleteExpense($sn)
     {
-        $expense =
-            Expense::where('sn', $sn)->first();
+        $expense = Expense::where('sn', $sn)->first();
 
         if (!$expense) {
-
             return response()->json([
-                'message' =>
-                    'Expense not found.',
+                'message' => 'Expense not found.',
             ], 404);
         }
 
         try {
-
             /*
             |--------------------------------------------------------------------------
             | Delete Receipt
@@ -761,18 +885,12 @@ class ExpenseController extends Controller
             */
 
             if ($expense->upload_receipt) {
-
-                $receiptPath =
-                    public_path(
-                        'upload_receipt/' .
-                        $expense->upload_receipt
-                    );
+                $receiptPath = public_path(
+                    $expense->upload_receipt
+                );
 
                 if (File::exists($receiptPath)) {
-
-                    File::delete(
-                        $receiptPath
-                    );
+                    File::delete($receiptPath);
                 }
             }
 
@@ -782,11 +900,10 @@ class ExpenseController extends Controller
             |--------------------------------------------------------------------------
             */
 
-            $documents =
-                ExpenseDocument::where(
-                    'expense_sn',
-                    $expense->sn
-                )->get();
+            $documents = ExpenseDocument::where(
+                'expense_sn',
+                $expense->sn
+            )->get();
 
             /*
             |--------------------------------------------------------------------------
@@ -794,21 +911,13 @@ class ExpenseController extends Controller
             |--------------------------------------------------------------------------
             */
 
-            foreach (
-                $documents
-                as $document
-            ) {
-
-                $documentPath =
-                    public_path(
-                        $document->file_path
-                    );
+            foreach ($documents as $document) {
+                $documentPath = public_path(
+                    $document->file_path
+                );
 
                 if (File::exists($documentPath)) {
-
-                    File::delete(
-                        $documentPath
-                    );
+                    File::delete($documentPath);
                 }
             }
 
@@ -837,11 +946,9 @@ class ExpenseController extends Controller
             ]);
 
         } catch (\Exception $e) {
-
             return response()->json([
                 'message' =>
                     'Failed to delete expense.',
-
                 'error' =>
                     $e->getMessage(),
             ], 500);
