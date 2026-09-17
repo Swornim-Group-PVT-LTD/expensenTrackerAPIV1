@@ -163,6 +163,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/invoices', [InvoiceController::class, 'addInvoice']);
     Route::get('/invoices', [InvoiceController::class, 'getInvoiceList']);
     Route::get('/invoices/{sn}', [InvoiceController::class, 'getInvoice']);
-    Route::post('/invoices/{sn}/update', [InvoiceController::class, 'updateInvoice']);
+    Route::put('/invoices/{sn}', [InvoiceController::class, 'updateInvoice']);
     Route::delete('/invoices/{sn}', [InvoiceController::class, 'deleteInvoice']);
 });
