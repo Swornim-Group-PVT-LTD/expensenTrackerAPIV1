@@ -1787,110 +1787,103 @@ class ExpenseController extends Controller
 
         $customerid = $user->customerid;
 
-        $query = Expense::where('customerid', $customerid);
+        $query = Expense::where(
+            'customerid',
+            $customerid
+        );
 
         // --------------------------------------------------------------------
-        // DATE FILTER
+        // Date range filter
         // --------------------------------------------------------------------
 
-        if ($request->filled('start_date') && $request->filled('end_date')) {
+        if (
+            $request->filled('start_date') &&
+            $request->filled('end_date')
+        ) {
 
-            $startDate = Carbon::parse($request->start_date)->startOfDay();
-            $endDate   = Carbon::parse($request->end_date)->endOfDay();
-
-            $query->whereBetween('created_date', [
-                $startDate,
-                $endDate
-            ]);
+            $query->whereBetween(
+                'created_date',
+                [
+                    $request->start_date,
+                    $request->end_date
+                ]
+            );
         }
 
         // --------------------------------------------------------------------
-        // DAILY / WEEKLY / MONTHLY / YEARLY FILTER
+        // Daily / Weekly / Monthly / Yearly
         // --------------------------------------------------------------------
 
         if ($request->filled('filter_type')) {
 
             $today = Carbon::now();
 
-            switch (strtolower($request->filter_type)) {
+            switch ($request->filter_type) {
 
-                // ------------------------------------------------------------
-                // DAILY
-                // ------------------------------------------------------------
                 case 'daily':
 
-                    $startOfDay = $today->copy()->startOfDay();
-                    $endOfDay   = $today->copy()->endOfDay();
-
-                    $query->whereBetween('created_date', [
-                        $startOfDay,
-                        $endOfDay
-                    ]);
+                    $query->whereDate(
+                        'created_date',
+                        $today->toDateString()
+                    );
 
                     break;
 
-                // ------------------------------------------------------------
-                // WEEKLY
-                // ------------------------------------------------------------
                 case 'weekly':
 
-                    $startOfWeek = $today->copy()->startOfWeek();
-                    $endOfWeek   = $today->copy()->endOfWeek();
+                    $query->whereBetween(
+                        'created_date',
+                        [
+                            $today->copy()
+                                ->startOfWeek(),
 
-                    $query->whereBetween('created_date', [
-                        $startOfWeek,
-                        $endOfWeek
-                    ]);
+                            $today->copy()
+                                ->endOfWeek(),
+                        ]
+                    );
 
                     break;
 
-                // ------------------------------------------------------------
-                // MONTHLY
-                // ------------------------------------------------------------
                 case 'monthly':
 
-                    $startOfMonth = $today->copy()->startOfMonth();
-                    $endOfMonth   = $today->copy()->endOfMonth();
-
-                    $query->whereBetween('created_date', [
-                        $startOfMonth,
-                        $endOfMonth
-                    ]);
+                    $query->whereMonth(
+                        'created_date',
+                        $today->month
+                    )->whereYear(
+                        'created_date',
+                        $today->year
+                    );
 
                     break;
 
-                // ------------------------------------------------------------
-                // YEARLY
-                // ------------------------------------------------------------
                 case 'yearly':
 
-                    $startOfYear = $today->copy()->startOfYear();
-                    $endOfYear   = $today->copy()->endOfYear();
-
-                    $query->whereBetween('created_date', [
-                        $startOfYear,
-                        $endOfYear
-                    ]);
+                    $query->whereYear(
+                        'created_date',
+                        $today->year
+                    );
 
                     break;
             }
         }
 
         // --------------------------------------------------------------------
-        // GROUP BY CATEGORY
+        // Group by category
         // --------------------------------------------------------------------
 
         $categoryExpenses = $query
             ->select(
                 'expense_category',
-                DB::raw('SUM(add_expenses) as total_amount')
+                DB::raw(
+                    'SUM(add_expenses) as total_amount'
+                )
             )
             ->groupBy('expense_category')
             ->orderBy('expense_category')
             ->get();
 
         // --------------------------------------------------------------------
-        // CURRENCY
+        // Currency
         // --------------------------------------------------------------------
 
         $balance = Balance::with('currency')
@@ -1900,7 +1893,7 @@ class ExpenseController extends Controller
         $currency = $balance->currency ?? null;
 
         // --------------------------------------------------------------------
-        // RESPONSE
+        // Response
         // --------------------------------------------------------------------
 
         return response()->json([
