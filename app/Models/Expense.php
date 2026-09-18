@@ -17,15 +17,40 @@ class Expense extends Model
         'add_expenses',
         'total_expenses',
         'expense_category',
+        'upload_receipt',
         'created_date',
         'updated_date',
     ];
 
     public $timestamps = false;
 
-    // Correct relationship: Expense belongs to the customer's Balance
+    /*
+    |--------------------------------------------------------------------------
+    | Balance Relationship
+    |--------------------------------------------------------------------------
+    */
+
     public function balance()
     {
-        return $this->belongsTo(Balance::class, 'customerid', 'customerid');
+        return $this->belongsTo(
+            Balance::class,
+            'customerid',
+            'customerid'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Expense Documents Relationship
+    |--------------------------------------------------------------------------
+    */
+
+    public function documents()
+    {
+        return $this->hasMany(
+            ExpenseDocument::class,
+            'expense_sn',
+            'sn'
+        );
     }
 }
