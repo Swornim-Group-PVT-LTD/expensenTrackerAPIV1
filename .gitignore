@@ -1,0 +1,6 @@
+/.env
+/.env.*
+!/.env.example
+/expensenTrackerAPIV1.zip
+/public/upload_doc/
+/public/upload_receipt/

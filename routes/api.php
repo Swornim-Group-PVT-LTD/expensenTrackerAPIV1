@@ -83,6 +83,8 @@ Route::middleware('auth.token:sanctum')->group(function () {
     Route::get('/expenses/graph/daily', [ExpenseController::class, 'getDailyExpenseGraph']);
     Route::get('/expenses/graph/monthly', [ExpenseController::class, 'getMonthlyExpenseGraph']);
     Route::get('/expenses/category-wise', [ExpenseController::class, 'getCategoryWiseExpenses']);
+    Route::get('/expenses/{sn}/receipt', [ExpenseController::class, 'downloadReceipt'])->name('expenses.receipt');
+    Route::get('/expenses/{sn}/documents/{documentId}', [ExpenseController::class, 'downloadDocument'])->whereNumber('documentId')->name('expenses.document');
 });
 
 //Investment Routes
@@ -110,7 +112,7 @@ Route::middleware('auth.token:sanctum')->group(function () {
 Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/savingCategory/add', [SavingCategoryController::class, 'addSavingCategory']);
     Route::get('/savingCategory/list', [SavingCategoryController::class, 'getSavingCategoryList']);
-    Route::get('/savingCategory/{id}', [SavingCategoryController::class, 'getSavingCategoryByID']);
+    Route::get('/savingCategory/{id}', [SavingCategoryController::class, 'getSavingCategoryBySN']);
     Route::put('/savingCategory/{id}', [SavingCategoryController::class, 'updateSavingCategory']);
     Route::delete('/savingCategory/{id}', [SavingCategoryController::class, 'destroySavingCategory']);
 });
