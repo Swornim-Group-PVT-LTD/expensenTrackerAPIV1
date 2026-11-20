@@ -5,14 +5,14 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\File;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 use Carbon\Carbon;
 use Illuminate\Support\Str;
 
 use App\Models\Expense;
-use App\Models\ExpenseDocument;
 use App\Models\Balance;
 use App\Models\DailyBalance;
 
@@ -61,6 +61,8 @@ class ExpenseController extends Controller
         $customerid = $user->customerid;
         $today = Carbon::now()->toDateString();
 
+        $newFiles = [];
+        $committed = false;
         DB::beginTransaction();
 
         try {
@@ -71,6 +73,7 @@ class ExpenseController extends Controller
 
             $balance = Balance::where('customerid', $customerid)
                 ->with('currency')
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
@@ -175,33 +178,10 @@ class ExpenseController extends Controller
             // ----------------------------------------------------------------
 
             if ($request->hasFile('upload_receipt')) {
-
-                $receipt = $request->file('upload_receipt');
-
-                $receiptDirectory = public_path('upload_receipt');
-
-                if (!File::exists($receiptDirectory)) {
-                    File::makeDirectory(
-                        $receiptDirectory,
-                        0755,
-                        true
-                    );
-                }
-
-                $receiptName = time() . '_' .
-                    Str::random(10) . '.' .
-                    $receipt->getClientOriginalExtension();
-
-                $receipt->move(
-                    $receiptDirectory,
-                    $receiptName
+                $expense->upload_receipt = $this->storeAttachment(
+                    $request->file('upload_receipt'), 'upload_receipt', $newFiles
                 );
-
-                $expense->upload_receipt =
-                    'upload_receipt/' . $receiptName;
-
                 $expense->updated_date = now();
-
                 $expense->save();
             }
 
@@ -223,39 +203,10 @@ class ExpenseController extends Controller
             // Upload Multiple Documents - OPTIONAL
             // ----------------------------------------------------------------
 
-            if ($request->hasFile('upload_doc')) {
-
-                $documentDirectory = public_path('upload_doc');
-
-                if (!File::exists($documentDirectory)) {
-                    File::makeDirectory(
-                        $documentDirectory,
-                        0755,
-                        true
-                    );
-                }
-
-                foreach ($request->file('upload_doc') as $document) {
-
-                    $documentName = time() . '_' .
-                        Str::random(10) . '.' .
-                        $document->getClientOriginalExtension();
-
-                    $document->move(
-                        $documentDirectory,
-                        $documentName
-                    );
-
-                    ExpenseDocument::create([
-                        'expense_sn' => $expense->sn,
-                        'file_name' => $documentName,
-                        'file_path' => 'upload_doc/' . $documentName,
-                        'file_type' => $document->getClientMimeType(),
-                    ]);
-                }
-            }
+            $this->storeDocuments($expense, $request->file('upload_doc') ?? [], $newFiles);
 
             DB::commit();
+            $committed = true;
 
             // ----------------------------------------------------------------
             // Reload with documents
@@ -282,16 +233,16 @@ class ExpenseController extends Controller
 
                     'upload_receipt_url' =>
                         $expense->upload_receipt
-                            ? asset($expense->upload_receipt)
+                            ? route('expenses.receipt', ['sn' => $expense->sn])
                             : null,
 
                     'documents' => $expense->documents->map(
-                        function ($document) {
+                        function ($document) use ($expense) {
                             return [
                                 'id' => $document->id,
                                 'file_name' => $document->file_name,
                                 'file_type' => $document->file_type,
-                                'file_url' => asset($document->file_path),
+                                'file_url' => route('expenses.document', ['sn' => $expense->sn, 'documentId' => $document->id]),
                             ];
                         }
                     )->values(),
@@ -354,6 +305,10 @@ class ExpenseController extends Controller
                 'message' => 'Failed to add expense.',
                 'error' => $e->getMessage(),
             ], 500);
+        } finally {
+            if (!$committed) {
+                $this->deleteAttachments($newFiles);
+            }
         }
     }
 
@@ -374,21 +329,6 @@ class ExpenseController extends Controller
         }
 
         $customerid = $user->customerid;
-
-        // --------------------------------------------------------------------
-        // Find expense only for logged-in customer
-        // --------------------------------------------------------------------
-
-        $expense = Expense::where('sn', $sn)
-            ->where('customerid', $customerid)
-            ->first();
-
-        if (!$expense) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Expense not found.',
-            ], 404);
-        }
 
         $request->validate([
             'add_expenses' => [
@@ -422,6 +362,9 @@ class ExpenseController extends Controller
             ],
         ]);
 
+        $newFiles = [];
+        $oldFiles = [];
+        $committed = false;
         DB::beginTransaction();
 
         try {
@@ -432,6 +375,7 @@ class ExpenseController extends Controller
 
             $balance = Balance::where('customerid', $customerid)
                 ->with('currency')
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
@@ -441,6 +385,19 @@ class ExpenseController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => 'Opening balance not found.',
+                ], 404);
+            }
+
+            $expense = Expense::where('sn', $sn)
+                ->where('customerid', $customerid)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$expense) {
+                DB::rollBack();
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Expense not found.',
                 ], 404);
             }
 
@@ -550,47 +507,10 @@ class ExpenseController extends Controller
             // ----------------------------------------------------------------
 
             if ($request->hasFile('upload_receipt')) {
-
-                // Delete old receipt
-                if ($expense->upload_receipt) {
-
-                    $oldReceiptPath = public_path(
-                        $expense->upload_receipt
-                    );
-
-                    if (File::exists($oldReceiptPath)) {
-                        File::delete($oldReceiptPath);
-                    }
-                }
-
-                // Create folder
-                $receiptDirectory =
-                    public_path('upload_receipt');
-
-                if (!File::exists($receiptDirectory)) {
-                    File::makeDirectory(
-                        $receiptDirectory,
-                        0755,
-                        true
-                    );
-                }
-
-                // Upload new receipt
-                $receipt =
-                    $request->file('upload_receipt');
-
-                $receiptName =
-                    time() . '_' .
-                    Str::random(10) . '.' .
-                    $receipt->getClientOriginalExtension();
-
-                $receipt->move(
-                    $receiptDirectory,
-                    $receiptName
+                $oldFiles[] = $expense->upload_receipt;
+                $expense->upload_receipt = $this->storeAttachment(
+                    $request->file('upload_receipt'), 'upload_receipt', $newFiles
                 );
-
-                $expense->upload_receipt =
-                    'upload_receipt/' . $receiptName;
             }
 
             // ----------------------------------------------------------------
@@ -624,71 +544,13 @@ class ExpenseController extends Controller
             // ----------------------------------------------------------------
 
             if ($request->hasFile('upload_doc')) {
-
-                // Get old documents
-                $oldDocuments = ExpenseDocument::where(
-                    'expense_sn',
-                    $expense->sn
-                )->get();
-
-                // Delete old physical files
-                foreach ($oldDocuments as $oldDocument) {
-
-                    $oldFilePath = public_path(
-                        $oldDocument->file_path
-                    );
-
-                    if (File::exists($oldFilePath)) {
-                        File::delete($oldFilePath);
-                    }
-                }
-
-                // Delete old database records
-                ExpenseDocument::where(
-                    'expense_sn',
-                    $expense->sn
-                )->delete();
-
-                // Create document folder
-                $documentDirectory =
-                    public_path('upload_doc');
-
-                if (!File::exists($documentDirectory)) {
-                    File::makeDirectory(
-                        $documentDirectory,
-                        0755,
-                        true
-                    );
-                }
-
-                // Upload new documents
-                foreach (
-                    $request->file('upload_doc')
-                    as $document
-                ) {
-
-                    $documentName =
-                        time() . '_' .
-                        Str::random(10) . '.' .
-                        $document->getClientOriginalExtension();
-
-                    $document->move(
-                        $documentDirectory,
-                        $documentName
-                    );
-
-                    ExpenseDocument::create([
-                        'expense_sn' => $expense->sn,
-                        'file_name' => $documentName,
-                        'file_path' =>
-                            'upload_doc/' . $documentName,
-                        'file_type' =>
-                            $document->getClientMimeType(),
-                    ]);
-                }
+                $oldFiles = array_merge($oldFiles, $expense->documents()->pluck('file_path')->all());
+                $expense->documents()->delete();
+                $this->storeDocuments($expense, $request->file('upload_doc'), $newFiles);
             }
 
             DB::commit();
+            $committed = true;
 
             // ----------------------------------------------------------------
             // Reload
@@ -722,12 +584,12 @@ class ExpenseController extends Controller
 
                     'upload_receipt_url' =>
                         $expense->upload_receipt
-                            ? asset($expense->upload_receipt)
+                            ? route('expenses.receipt', ['sn' => $expense->sn])
                             : null,
 
                     'documents' =>
                         $expense->documents->map(
-                            function ($document) {
+                            function ($document) use ($expense) {
                                 return [
                                     'id' => $document->id,
                                     'file_name' =>
@@ -735,7 +597,7 @@ class ExpenseController extends Controller
                                     'file_type' =>
                                         $document->file_type,
                                     'file_url' =>
-                                        asset($document->file_path),
+                                        route('expenses.document', ['sn' => $expense->sn, 'documentId' => $document->id]),
                                 ];
                             }
                         )->values(),
@@ -803,9 +665,81 @@ class ExpenseController extends Controller
                 'message' => 'Failed to update expense.',
                 'error' => $e->getMessage(),
             ], 500);
+        } finally {
+            $this->deleteAttachments($committed ? $oldFiles : $newFiles);
         }
     }
 
+
+    public function downloadReceipt(string $sn)
+    {
+        $expense = $this->findOwnedExpense($sn);
+
+        return $this->downloadAttachment($expense->upload_receipt);
+    }
+
+    public function downloadDocument(string $sn, string $documentId)
+    {
+        $document = $this->findOwnedExpense($sn)->documents()->whereKey($documentId)->firstOrFail();
+
+        return $this->downloadAttachment($document->file_path);
+    }
+
+    private function findOwnedExpense(string $sn): Expense
+    {
+        return Expense::where('sn', $sn)
+            ->where('customerid', Auth::user()->customerid)
+            ->firstOrFail();
+    }
+
+    private function downloadAttachment(?string $path)
+    {
+        $disk = Storage::disk('expense_attachments');
+        abort_unless($path && $disk->exists($path), 404);
+
+        return $disk->download($path, basename($path), [
+            'Content-Type' => 'application/octet-stream',
+            'X-Content-Type-Options' => 'nosniff',
+            'Cache-Control' => 'private, no-store',
+        ]);
+    }
+
+    private function storeAttachment(UploadedFile $file, string $directory, array &$newFiles): string
+    {
+        $path = $file->store($directory, 'expense_attachments');
+        if (!$path) {
+            throw new \RuntimeException('Unable to store expense attachment.');
+        }
+
+        $newFiles[] = $path;
+
+        return $path;
+    }
+
+    private function storeDocuments(Expense $expense, array $documents, array &$newFiles): void
+    {
+        foreach ($documents as $document) {
+            $type = $document->getMimeType();
+            $path = $this->storeAttachment($document, 'upload_doc', $newFiles);
+
+            $expense->documents()->create([
+                'file_name' => basename($path),
+                'file_path' => $path,
+                'file_type' => $type,
+            ]);
+        }
+    }
+
+    private function deleteAttachments(array $paths): void
+    {
+        foreach (array_filter($paths) as $path) {
+            try {
+                Storage::disk('expense_attachments')->delete($path);
+            } catch (\Throwable $exception) {
+                report($exception);
+            }
+        }
+    }
 
     // ========================================================================
     // GET SINGLE EXPENSE
@@ -847,7 +781,7 @@ class ExpenseController extends Controller
             // ----------------------------------------------------------------
 
             $receiptUrl = $expense->upload_receipt
-                ? asset($expense->upload_receipt)
+                ? route('expenses.receipt', ['sn' => $expense->sn])
                 : null;
 
             // ----------------------------------------------------------------
@@ -855,12 +789,12 @@ class ExpenseController extends Controller
             // ----------------------------------------------------------------
 
             $documents = $expense->documents->map(
-                function ($document) {
+                function ($document) use ($expense) {
                     return [
                         'id' => $document->id,
                         'file_name' => $document->file_name,
                         'file_type' => $document->file_type,
-                        'file_url' => asset($document->file_path),
+                        'file_url' => route('expenses.document', ['sn' => $expense->sn, 'documentId' => $document->id]),
                     ];
                 }
             )->values();
@@ -1070,7 +1004,7 @@ class ExpenseController extends Controller
                 // Receipt URL
                 $expense->upload_receipt_url =
                     $expense->upload_receipt
-                        ? asset($expense->upload_receipt)
+                        ? route('expenses.receipt', ['sn' => $expense->sn])
                         : null;
 
                 // Document URLs
@@ -1079,7 +1013,7 @@ class ExpenseController extends Controller
                     as $document
                 ) {
                     $document->file_url =
-                        asset($document->file_path);
+                        route('expenses.document', ['sn' => $expense->sn, 'documentId' => $document->id]);
                 }
             }
 
@@ -1170,21 +1104,8 @@ class ExpenseController extends Controller
 
         $customerid = $user->customerid;
 
-        // --------------------------------------------------------------------
-        // Find expense belonging to logged-in customer
-        // --------------------------------------------------------------------
-
-        $expense = Expense::where('sn', $sn)
-            ->where('customerid', $customerid)
-            ->first();
-
-        if (!$expense) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Expense not found.',
-            ], 404);
-        }
-
+        $oldFiles = [];
+        $committed = false;
         DB::beginTransaction();
 
         try {
@@ -1195,6 +1116,7 @@ class ExpenseController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $customerid)
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
@@ -1204,6 +1126,19 @@ class ExpenseController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => 'Opening balance not found.',
+                ], 404);
+            }
+
+            $expense = Expense::where('sn', $sn)
+                ->where('customerid', $customerid)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$expense) {
+                DB::rollBack();
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Expense not found.',
                 ], 404);
             }
 
@@ -1254,52 +1189,12 @@ class ExpenseController extends Controller
             }
 
             // ----------------------------------------------------------------
-            // Delete receipt physical file
+            // Remove attachment records before deleting their files after commit.
             // ----------------------------------------------------------------
 
-            if ($expense->upload_receipt) {
-
-                $receiptPath = public_path(
-                    $expense->upload_receipt
-                );
-
-                if (File::exists($receiptPath)) {
-                    File::delete($receiptPath);
-                }
-            }
-
-            // ----------------------------------------------------------------
-            // Get documents
-            // ----------------------------------------------------------------
-
-            $documents = ExpenseDocument::where(
-                'expense_sn',
-                $expense->sn
-            )->get();
-
-            // ----------------------------------------------------------------
-            // Delete document physical files
-            // ----------------------------------------------------------------
-
-            foreach ($documents as $document) {
-
-                $documentPath = public_path(
-                    $document->file_path
-                );
-
-                if (File::exists($documentPath)) {
-                    File::delete($documentPath);
-                }
-            }
-
-            // ----------------------------------------------------------------
-            // Delete document records
-            // ----------------------------------------------------------------
-
-            ExpenseDocument::where(
-                'expense_sn',
-                $expense->sn
-            )->delete();
+            $oldFiles = $expense->documents()->pluck('file_path')->all();
+            $oldFiles[] = $expense->upload_receipt;
+            $expense->documents()->delete();
 
             // ----------------------------------------------------------------
             // Delete expense
@@ -1317,6 +1212,7 @@ class ExpenseController extends Controller
             )->sum('add_expenses');
 
             DB::commit();
+            $committed = true;
 
             // ----------------------------------------------------------------
             // Response
@@ -1377,6 +1273,10 @@ class ExpenseController extends Controller
                 'message' => 'Failed to delete expense.',
                 'error' => $e->getMessage(),
             ], 500);
+        } finally {
+            if ($committed) {
+                $this->deleteAttachments($oldFiles);
+            }
         }
     }
 

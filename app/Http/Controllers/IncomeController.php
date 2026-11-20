@@ -9,6 +9,7 @@ use Carbon\Carbon;
 use App\Models\Income;
 use App\Models\Balance;
 use App\Models\DailyBalance;
+use App\Services\BalanceService;
 
 class IncomeController extends Controller
 {
@@ -32,9 +33,11 @@ class IncomeController extends Controller
             // Opening balance must exist
             $balance = Balance::where('customerid', $user->customerid)
                 ->with('currency')
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found. Please create opening balance first.'
                 ], 404);
@@ -369,16 +372,6 @@ class IncomeController extends Controller
             ], 401);
         }
 
-        $income = Income::where('sn', $sn)
-            ->where('customerid', $user->customerid)
-            ->first();
-
-        if (!$income) {
-            return response()->json([
-                'message' => 'Income not found.'
-            ], 404);
-        }
-
         $request->validate([
             'add_income'      => 'required|numeric|min:0',
             'income_category' => 'required|string',
@@ -390,11 +383,25 @@ class IncomeController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found.'
+                ], 404);
+            }
+
+            $income = Income::where('sn', $sn)
+                ->where('customerid', $user->customerid)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$income) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'Income not found.'
                 ], 404);
             }
 
@@ -424,6 +431,7 @@ class IncomeController extends Controller
              */
             $dailyBalance = DailyBalance::where('customerid', $user->customerid)
                 ->where('balance_date', $transactionDate)
+                ->lockForUpdate()
                 ->first();
 
             if ($dailyBalance) {
@@ -438,6 +446,7 @@ class IncomeController extends Controller
                     $dailyBalance->total_debit;
 
                 $dailyBalance->save();
+                app(BalanceService::class)->carryClosingBalanceForward($dailyBalance);
             }
 
             DB::commit();
@@ -495,27 +504,31 @@ class IncomeController extends Controller
             ], 401);
         }
 
-        $income = Income::where('sn', $sn)
-            ->where('customerid', $user->customerid)
-            ->first();
-
-        if (!$income) {
-            return response()->json([
-                'message' => 'Income not found.'
-            ], 404);
-        }
-
         DB::beginTransaction();
 
         try {
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found.'
+                ], 404);
+            }
+
+            $income = Income::where('sn', $sn)
+                ->where('customerid', $user->customerid)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$income) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'Income not found.'
                 ], 404);
             }
 
@@ -529,6 +542,7 @@ class IncomeController extends Controller
              */
             $dailyBalance = DailyBalance::where('customerid', $user->customerid)
                 ->where('balance_date', $transactionDate)
+                ->lockForUpdate()
                 ->first();
 
             if ($dailyBalance) {
@@ -545,6 +559,7 @@ class IncomeController extends Controller
                     $dailyBalance->total_debit;
 
                 $dailyBalance->save();
+                app(BalanceService::class)->carryClosingBalanceForward($dailyBalance);
             }
 
             /**

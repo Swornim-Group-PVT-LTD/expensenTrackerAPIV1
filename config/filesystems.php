@@ -36,6 +36,12 @@ return [
             'throw' => false,
         ],
 
+        'expense_attachments' => [
+            'driver' => 'local',
+            'root' => storage_path('app/expense-attachments'),
+            'throw' => true,
+        ],
+
         'public' => [
             'driver' => 'local',
             'root' => storage_path('app/public'),
