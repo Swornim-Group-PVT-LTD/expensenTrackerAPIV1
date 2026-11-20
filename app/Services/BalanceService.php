@@ -18,10 +18,6 @@ class BalanceService
 
         return DB::transaction(function () use ($customerId, $today) {
 
-            $master = Balance::where('customerid', $customerId)
-                ->lockForUpdate()
-                ->firstOrFail();
-
             $existing = DailyBalance::where('customerid', $customerId)
                 ->where('balance_date', $today)
                 ->lockForUpdate()
@@ -37,6 +33,10 @@ class BalanceService
                 ->lockForUpdate()
                 ->first();
 
+            $master = Balance::where('customerid', $customerId)
+                ->lockForUpdate()
+                ->firstOrFail();
+
             $opening = $previous
                 ? $previous->closing_balance
                 : $master->opening_balance;
@@ -51,28 +51,6 @@ class BalanceService
                 'currency_id'     => $master->currency_id,
             ]);
         });
-    }
-
-    /**
-     * Carry a corrected closing balance through later rows in the caller's transaction.
-     */
-    public function carryClosingBalanceForward(DailyBalance $correctedBalance): void
-    {
-        $openingBalance = $correctedBalance->closing_balance;
-
-        $laterBalances = DailyBalance::where('customerid', $correctedBalance->customerid)
-            ->where('balance_date', '>', $correctedBalance->balance_date)
-            ->orderBy('balance_date')
-            ->lockForUpdate()
-            ->get();
-
-        foreach ($laterBalances as $balance) {
-            $balance->opening_balance = $openingBalance;
-            $balance->closing_balance = $openingBalance + $balance->total_credit - $balance->total_debit;
-            $balance->save();
-
-            $openingBalance = $balance->closing_balance;
-        }
     }
 
     /**
