@@ -27,7 +27,7 @@ use App\Http\Controllers\InvoiceController;
 |
 */
 
-// Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
+// Route::middleware('auth.token:sanctum')->get('/user', function (Request $request) {
 //     return $request->user();
 // });
 
@@ -36,13 +36,13 @@ Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 
 // Protected routes example
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     // Other protected routes here
 });
 
 //Balancce Routes
-Route::middleware('auth:sanctum')->prefix('balances')->group(function () {
+Route::middleware('auth.token:sanctum')->prefix('balances')->group(function () {
 Route::post('/', [BalanceController::class, 'addBalance']); // POST /api/balances
 Route::get('/', [BalanceController::class, 'getBalance']); // GET /api/balances
 Route::get('/monthly-remaining', [BalanceController::class, 'getMonthlyRemainingBalanceGraph']);
@@ -51,7 +51,7 @@ Route::get('/summary', [BalanceController::class, 'getDailyBalance']);
 });
 
 //Income Routes
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/incomes', [IncomeController::class, 'addIncome']);  
     Route::get('/incomes', [IncomeController::class, 'getIncomeList']);  
     Route::get('/income/total', [IncomeController::class, 'getTotalIncome']);
@@ -63,7 +63,7 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 //Saving Routes
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/savings', [SavingController::class, 'addSaving']);  // Add saving
     Route::get('/savings', [SavingController::class, 'getSavingLists']);   // Get saving list
     Route::get('/saving/total', [SavingController::class, 'getTotalSaving']);
@@ -74,7 +74,7 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 //Expenses Routes
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/expenses', [ExpenseController::class, 'addExpense']);
     Route::get('/expenses', [ExpenseController::class, 'getExpenseLists']);
     Route::get('/expenses/total', [ExpenseController::class, 'getTotalExpenses']);
@@ -86,7 +86,7 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 //Investment Routes
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/investments', [InvestmentController::class, 'addInvestment']);
     Route::get('/investments', [InvestmentController::class, 'getInvestmentList']);
     Route::get('/investment/total', [InvestmentController::class, 'getTotalInvestment']);
@@ -98,7 +98,7 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 //Income Category
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/incomeCategory/add', [IncomeCategoryController::class, 'addIncomeCategory']);
     Route::get('/incomeCategory/list', [IncomeCategoryController::class, 'getIncomeCategoryLists']);
     Route::get('/incomeCategory/{id}', [IncomeCategoryController::class, 'getOneIncomeCateory']);       // Get by ID
@@ -107,7 +107,7 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 //Saving Category
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/savingCategory/add', [SavingCategoryController::class, 'addSavingCategory']);
     Route::get('/savingCategory/list', [SavingCategoryController::class, 'getSavingCategoryList']);
     Route::get('/savingCategory/{id}', [SavingCategoryController::class, 'getSavingCategoryByID']);
@@ -116,7 +116,7 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 //Expenses Category
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/expenseCategory/add', [ExpenseCategoryController::class, 'addExpenseCategory']);
     Route::get('/expenseCategory/list', [ExpenseCategoryController::class, 'getExpenseCategory']);
     Route::get('/expenseCategory/{id}', [ExpenseCategoryController::class, 'getExpenseCategoryById']);
@@ -125,7 +125,7 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 //Investment Category
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/investmentCategory/add', [InvestmentCategoryController::class, 'addInvestmentCategory']);
     Route::get('/investmentCategory/list', [InvestmentCategoryController::class, 'getInvestmentCategory']);
     Route::get('/investmentCategory/{id}', [InvestmentCategoryController::class, 'getInvestmentCategoryById']);
@@ -134,7 +134,7 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 // Currency Category
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/currency/add', [CurrencyController::class, 'addCurrency']);
     Route::get('/currency/all', [CurrencyController::class, 'getCurrencies']);
     Route::put('/currency/update/{sn}', [CurrencyController::class, 'updateCurrency']);
@@ -142,11 +142,11 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 // Dashboard Route
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::get('/dashboard-graph', [DashboardController::class, 'getDashboardData']);
 });
 
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::get('/expense-thresholds', [ExpenseThresholdController::class, 'getAllThresholds']);
     Route::post('/expense-thresholds', [ExpenseThresholdController::class, 'addExpenseThreshold']);
     
@@ -159,7 +159,7 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 // Invoice Routes
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/invoices', [InvoiceController::class, 'addInvoice']);
     Route::get('/invoices', [InvoiceController::class, 'getInvoiceList']);
     Route::get('/invoices/{sn}', [InvoiceController::class, 'getInvoice']);

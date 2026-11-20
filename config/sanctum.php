@@ -48,6 +48,9 @@ return [
 
     'expiration' => null,
 
+    // Maximum time between authenticated bearer-token requests, in minutes.
+    'idle_timeout' => env('SANCTUM_IDLE_TIMEOUT', 10),
+
     /*
     |--------------------------------------------------------------------------
     | Sanctum Middleware
