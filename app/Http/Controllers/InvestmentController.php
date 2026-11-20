@@ -31,11 +31,9 @@ class InvestmentController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
-                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
-                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found. Please create opening balance first.'
                 ], 404);
@@ -46,7 +44,6 @@ class InvestmentController extends Controller
              */
             $dailyBalance = DailyBalance::where('customerid', $user->customerid)
                 ->where('balance_date', $today)
-                ->lockForUpdate()
                 ->first();
 
             if (!$dailyBalance) {
@@ -54,7 +51,6 @@ class InvestmentController extends Controller
                 $previousBalance = DailyBalance::where('customerid', $user->customerid)
                     ->where('balance_date', '<', $today)
                     ->orderByDesc('balance_date')
-                    ->lockForUpdate()
                     ->first();
 
                 $openingBalance = $previousBalance
@@ -178,11 +174,9 @@ class InvestmentController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
-                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
-                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found.'
                 ], 404);
@@ -195,7 +189,6 @@ class InvestmentController extends Controller
 
             $dailyBalance = DailyBalance::where('customerid', $user->customerid)
                 ->where('balance_date', $transactionDate)
-                ->lockForUpdate()
                 ->first();
 
             if ($dailyBalance) {
@@ -296,11 +289,9 @@ class InvestmentController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
-                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
-                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found.'
                 ], 404);
@@ -312,7 +303,6 @@ class InvestmentController extends Controller
 
             $dailyBalance = DailyBalance::where('customerid', $user->customerid)
                 ->where('balance_date', $transactionDate)
-                ->lockForUpdate()
                 ->first();
 
             if ($dailyBalance) {
