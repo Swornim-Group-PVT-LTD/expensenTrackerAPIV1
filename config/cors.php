@@ -7,6 +7,7 @@ return [
     'allowed_methods' => ['*'],
 
     'allowed_origins' => [
+    'https://expense-tracker-frontend-v2-dun.vercel.app',
     'http://localhost:3000',
     'https://expense-tracker-forntned.vercel.app',
     ],
