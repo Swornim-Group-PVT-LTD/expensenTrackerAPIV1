@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
 
 class InvoiceController extends Controller
 {
@@ -382,7 +383,7 @@ class InvoiceController extends Controller
     ) {
         $user = Auth::user();
 
-        $request->validate([
+        $validated = $request->validate([
             'invoice_number' =>
                 'nullable|string|max:50',
 
@@ -421,6 +422,8 @@ class InvoiceController extends Controller
 
             'shipping_fee' =>
                 'nullable|numeric|min:0',
+
+            'status' => ['sometimes', 'required', Rule::in(Invoice::STATUSES)],
 
             'items' =>
                 'required|array|min:1',
@@ -510,6 +513,10 @@ class InvoiceController extends Controller
             /*
              * Update Invoice
              */
+            if (array_key_exists('status', $validated)) {
+                $invoice->status = $validated['status'];
+            }
+
             $invoice->update([
                 'invoice_number' =>
                     $request->invoice_number,
@@ -612,6 +619,37 @@ class InvoiceController extends Controller
         }
     }
 
+
+    /**
+     * Update only the invoice status.
+     */
+    public function updateInvoiceStatus(Request $request, $sn)
+    {
+        $validated = $request->validate([
+            'status' => ['required', Rule::in(Invoice::STATUSES)],
+        ]);
+
+        $invoice = Invoice::where('sn', $sn)
+            ->where('customerid', Auth::user()->customerid)
+            ->first();
+
+        if (!$invoice) {
+            return response()->json(['message' => 'Invoice not found.'], 404);
+        }
+
+        $invoice->update([
+            'status' => $validated['status'],
+            'updated_date' => now()->toDateString(),
+        ]);
+
+        return response()->json([
+            'message' => 'Invoice status updated successfully.',
+            'data' => [
+                'sn' => $invoice->sn,
+                'status' => $invoice->status,
+            ],
+        ]);
+    }
 
     /**
      * Delete Invoice

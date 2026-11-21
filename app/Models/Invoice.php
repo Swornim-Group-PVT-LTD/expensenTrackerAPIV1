@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Invoice extends Model
 {
+    public const STATUSES = ['Active', 'Completed'];
+
     protected $table = 'invoices';
 
     protected $fillable = [
@@ -30,6 +32,7 @@ class Invoice extends Model
         'total_amount',
         'created_date',
         'updated_date',
+        'status',
     ];
 
     protected $casts = [
