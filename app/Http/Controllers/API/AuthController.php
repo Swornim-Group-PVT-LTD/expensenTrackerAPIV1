@@ -6,6 +6,9 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\Log;
 
@@ -156,6 +159,70 @@ class AuthController extends Controller
             'message' => 'Login successful',
             'access_token' => $token,
             'token_type' => 'Bearer',
+            'user' => $user,
+        ]);
+    }
+
+    public function profile(Request $request)
+    {
+        return response()->json(['user' => $request->user()]);
+    }
+
+    public function updateProfile(Request $request)
+    {
+        $user = $request->user();
+        $validated = $request->validate([
+            'first_name' => 'sometimes|required|string|max:255',
+            'middle_name' => 'sometimes|nullable|string|max:255',
+            'last_name' => 'sometimes|required|string|max:255',
+            'email' => ['sometimes', 'required', 'email', 'max:255', Rule::unique('users')->ignore($user)],
+            'phonenumber' => 'sometimes|required|string|max:20',
+            'country' => 'sometimes|required|string|max:255',
+            'address' => 'sometimes|required|string|max:255',
+            'user_type' => 'sometimes|nullable|string|max:255',
+            'representative_full_name' => 'sometimes|nullable|string|max:255',
+            'logo_uploads' => 'sometimes|required|image|mimes:jpeg,png,jpg,gif,webp|max:2048',
+            'current_password' => 'sometimes|nullable|string',
+            'password' => 'required_with:password_confirmation|string|min:6|max:72|confirmed',
+        ]);
+
+        $emailChanged = isset($validated['email']) && $validated['email'] !== $user->email;
+        if (($emailChanged || isset($validated['password']))
+            && !Hash::check($validated['current_password'] ?? '', $user->password)) {
+            throw ValidationException::withMessages([
+                'current_password' => ['Enter your current password to change your email or password.'],
+            ]);
+        }
+        unset($validated['current_password']);
+
+        if (isset($validated['password'])) {
+            $validated['password'] = Hash::make($validated['password']);
+        }
+
+        $logoPath = null;
+        if ($request->hasFile('logo_uploads')) {
+            $logo = $request->file('logo_uploads');
+            $filename = Str::uuid() . '.' . $logo->extension();
+            $logo->move(public_path('logo_uploads'), $filename);
+            $logoPath = 'logo_uploads/' . $filename;
+            $validated['logo_uploads'] = $logoPath;
+        }
+
+        try {
+            $user->fill($validated);
+            if ($emailChanged) {
+                $user->email_verified_at = null;
+            }
+            $user->save();
+        } catch (\Throwable $exception) {
+            if ($logoPath !== null) {
+                File::delete(public_path($logoPath));
+            }
+            throw $exception;
+        }
+
+        return response()->json([
+            'message' => 'Account details updated.',
             'user' => $user,
         ]);
     }

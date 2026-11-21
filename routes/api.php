@@ -38,7 +38,8 @@ Route::post('/login', [AuthController::class, 'login']);
 // Protected routes example
 Route::middleware('auth.token:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
-    // Other protected routes here
+    Route::get('/profile', [AuthController::class, 'profile']);
+    Route::patch('/profile', [AuthController::class, 'updateProfile']);
 });
 
 //Balancce Routes
