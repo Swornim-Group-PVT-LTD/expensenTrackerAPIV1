@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use App\Models\Income;
 use App\Models\Expense;
 use App\Models\Saving;
@@ -51,7 +52,7 @@ class DashboardController extends Controller
         // Calculate totals
         $data['income'] = $calculateTotal(Income::class, 'add_income');
         $data['expenses'] = $calculateTotal(Expense::class, 'add_expenses');
-        $data['saving'] = $calculateTotal(Saving::class, 'add_saving');
+        $data['saving'] = $calculateTotal(Saving::class, DB::raw(Saving::NET_AMOUNT));
         $data['investment'] = $calculateTotal(Investment::class, 'add_investment');
 
         return response()->json([

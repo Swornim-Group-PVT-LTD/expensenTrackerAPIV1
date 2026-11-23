@@ -11,3 +11,11 @@
 ## Environment configuration
 
 Keep the deployed environment configuration outside Git and set `APP_DEBUG=false` in production. Rotate the previously committed database credential. Before rotating the Laravel application key, inventory encrypted data and plan its migration and any session invalidation. Update the deployment's secret store and rebuild the Laravel configuration cache after changing settings.
+
+## Savings transfers
+
+Run `php artisan migrate --force` against the existing application database before serving this release.
+
+Send an authenticated `POST /api/savings/transfer` request with `saving_category`, `amount`, `transfer_key` (a UUID generated once per transfer), and optional `remarks`. For example, transfer `500.00` from `CIT` with remarks `CIT withdrawal`. The amount is drawn from that category's unfiltered savings balance. Reuse the same UUID and payload when retrying a request whose outcome is unknown. A new transfer returns 201 and a successful replay returns 200.
+
+Use `GET /api/savings/transfer-options` for category balances. Transfer entries appear in `GET /api/savings` with `is_transfer: true`, a positive transfer amount in `add_saving`, remarks, and a reduced running savings total. The account statement lists them as credits labeled **Saving Transfer Balance**. They are internal transfers and do not increase income.

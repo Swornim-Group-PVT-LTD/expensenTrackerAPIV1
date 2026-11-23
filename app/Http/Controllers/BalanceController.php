@@ -196,6 +196,12 @@ class BalanceController extends Controller
                 ->whereMonth('created_date', $month)
                 ->sum('add_expenses');
 
+            $savingTransfers = Saving::where('customerid', $user->customerid)
+                ->whereYear('created_date', $year)
+                ->whereMonth('created_date', $month)
+                ->whereNotNull('transfer_key')
+                ->sum('add_saving');
+
             // Total saving
             // Deduct ONLY where want_to_deduct_from_balance = 1
             $saving = Saving::where('customerid', $user->customerid)
@@ -214,13 +220,14 @@ class BalanceController extends Controller
             $totalDebit = $expense + $saving + $investment;
 
             // Remaining balance
-            $remainingBalance = $totalIncome - $totalDebit;
+            $remainingBalance = $totalIncome + $savingTransfers - $totalDebit;
 
             $graphData[] = [
                 'month' => Carbon::create($year, $month, 1)->format('F'),
                 'year' => $year,
                 'income' => (float) $totalIncome,
                 'expenses' => (float) $expense,
+                'saving_transferred' => (float) $savingTransfers,
                 'saving_deducted' => (float) $saving,
                 'investment' => (float) $investment,
                 'total_debit' => (float) $totalDebit,
@@ -369,15 +376,20 @@ class BalanceController extends Controller
 
         $savings = Saving::where('customerid', $customerId)
             ->when(true, $applyDateFilter)
+            ->where(function ($query) {
+                $query->where('want_to_deduct_from_balance', true)->orWhereNotNull('transfer_key');
+            })
+            ->orderBy('id')
             ->get()
-            ->map(function ($item) {
-
+            ->map(function (Saving $item) {
                 return [
                     'date' => Carbon::parse($item->created_date)->format('Y-m-d H:i:s'),
-                    'type' => 'Saving',
-                    'description' => $item->saving_category,
-                    'credit' => 0,
-                    'debit' => (float) $item->add_saving,
+                    'type' => $item->is_transfer ? 'Saving Transfer Balance' : 'Saving',
+                    'description' => $item->is_transfer && $item->remarks !== $item->saving_category
+                        ? $item->saving_category . ' - ' . $item->remarks
+                        : $item->saving_category,
+                    'credit' => $item->is_transfer ? (float) $item->add_saving : 0,
+                    'debit' => $item->is_transfer ? 0 : (float) $item->add_saving,
                 ];
             });
 

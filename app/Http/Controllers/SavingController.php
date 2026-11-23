@@ -5,6 +5,9 @@ namespace App\Http\Controllers;
 use App\Models\Saving;
 use App\Models\Balance;
 use App\Models\DailyBalance;
+use App\Services\BalanceService;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -12,6 +15,87 @@ use Carbon\Carbon;
 
 class SavingController extends Controller
 {
+    public function transferToBalance(Request $request, BalanceService $balanceService)
+    {
+        $data = $request->validate([
+            'saving_category' => 'required|string|max:255',
+            'amount' => ['required', 'numeric', 'min:0.01', 'max:99999999.99', 'regex:/^\d+(?:\.\d{1,2})?$/'],
+            'transfer_key' => 'required|uuid',
+            'remarks' => 'nullable|string|max:255',
+        ]);
+
+        $data['transfer_key'] = strtolower($data['transfer_key']);
+        $customerId = $request->user()->customerid;
+        $amount = (float) $data['amount'];
+        $remarks = $data['remarks'] ?? $data['saving_category'];
+
+        return DB::transaction(function () use ($data, $customerId, $amount, $remarks, $balanceService) {
+            $balance = Balance::where('customerid', $customerId)->lockForUpdate()->firstOrFail();
+            $savings = Saving::where('customerid', $customerId);
+            $transfer = (clone $savings)->where('transfer_key', $data['transfer_key'])->first();
+            $daily = null;
+
+            if ($transfer) {
+                abort_if(
+                    $transfer->saving_category !== $data['saving_category']
+                        || (float) $transfer->add_saving !== $amount
+                        || $transfer->remarks !== $remarks,
+                    409,
+                    'This transfer key has already been used with different details.'
+                );
+                $status = 200;
+            } else {
+                $available = (clone $savings)->where('saving_category', $data['saving_category'])
+                    ->sum(DB::raw(Saving::NET_AMOUNT));
+
+                if ((int) round($amount * 100) > (int) round($available * 100)) {
+                    throw ValidationException::withMessages([
+                        'amount' => 'The transfer exceeds the available savings for this category.',
+                    ]);
+                }
+
+                $daily = $balanceService->addCredit($customerId, $amount);
+                $transfer = Saving::create([
+                    'sn' => 'SAV' . strtoupper(Str::random(8)),
+                    'customerid' => $customerId,
+                    'add_saving' => $amount,
+                    'total_saving' => round($savings->sum(DB::raw(Saving::NET_AMOUNT)) - $amount, 2),
+                    'saving_category' => $data['saving_category'],
+                    'want_to_deduct_from_balance' => false,
+                    'transfer_key' => $data['transfer_key'],
+                    'remarks' => $remarks,
+                    'created_date' => $daily->balance_date,
+                    'updated_date' => $daily->balance_date,
+                ]);
+                $status = 201;
+            }
+
+            return response()->json([
+                'message' => 'Saving transferred to balance.',
+                'data' => $transfer,
+                'daily_balance' => $daily,
+                'currency' => $balance->currency,
+            ], $status);
+        }, 3);
+    }
+
+    private function ensureSavingsRemainAvailable(Saving $saving, float $reduction): void
+    {
+        if ($reduction <= 0) {
+            return;
+        }
+
+        $categorySavings = Saving::where('customerid', $saving->customerid)
+            ->where('saving_category', $saving->saving_category);
+
+        if ((clone $categorySavings)->whereNotNull('transfer_key')->exists()
+            && round($categorySavings->sum(DB::raw(Saving::NET_AMOUNT)) - $reduction, 2) < 0) {
+            throw ValidationException::withMessages([
+                'saving_category' => 'Some of these savings were transferred. This change would leave the category overdrawn.',
+            ]);
+        }
+    }
+
     // =========================================
     // ADD SAVING
     // =========================================
@@ -32,9 +116,11 @@ class SavingController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found. Please create opening balance first.'
                 ], 404);
@@ -73,6 +159,7 @@ class SavingController extends Controller
             if ($request->want_to_deduct_from_balance) {
 
                 if ($dailyBalance->closing_balance < $request->add_saving) {
+                    DB::rollBack();
                     return response()->json([
                         'message' => 'Insufficient balance.',
                         'available_balance' => (float) $dailyBalance->closing_balance,
@@ -85,7 +172,7 @@ class SavingController extends Controller
 
             // Total Saving Calculation
             $existingTotal = Saving::where('customerid', $user->customerid)
-                ->sum('add_saving');
+                ->sum(DB::raw(Saving::NET_AMOUNT));
 
             $newTotal = $existingTotal + $request->add_saving;
 
@@ -169,16 +256,6 @@ class SavingController extends Controller
             ], 401);
         }
 
-        $saving = Saving::where('sn', $sn)
-            ->where('customerid', $user->customerid)
-            ->first();
-
-        if (!$saving) {
-            return response()->json([
-                'message' => 'Saving not found.'
-            ], 404);
-        }
-
         $request->validate([
             'add_saving' => 'required|numeric|min:0',
             'saving_category' => 'required|string',
@@ -191,16 +268,33 @@ class SavingController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found.'
                 ], 404);
             }
 
+            $saving = Saving::where('sn', $sn)
+                ->where('customerid', $user->customerid)
+                ->first();
+
+            if (!$saving || $saving->is_transfer) {
+                DB::rollBack();
+
+                return response()->json(['message' => 'Editable saving not found.'], 404);
+            }
+
             $oldAmount = (float) $saving->add_saving;
             $newAmount = (float) $request->add_saving;
+
+            $this->ensureSavingsRemainAvailable(
+                $saving,
+                $saving->saving_category === $request->saving_category ? $oldAmount - $newAmount : $oldAmount
+            );
 
             $oldFlag = (bool) $saving->want_to_deduct_from_balance;
             $newFlag = (bool) $request->want_to_deduct_from_balance;
@@ -227,6 +321,7 @@ class SavingController extends Controller
                         $dailyBalance->total_debit;
 
                     if ($newAmount > $availableBalance) {
+                        DB::rollBack();
                         return response()->json([
                             'message' => 'You tried to save more than the available balance.',
                             'availableBalance' => (float) $availableBalance
@@ -247,7 +342,7 @@ class SavingController extends Controller
             // Recalculate total saving
             $totalSaving = Saving::where('customerid', $user->customerid)
                 ->where('sn', '!=', $sn)
-                ->sum('add_saving') + $newAmount;
+                ->sum(DB::raw(Saving::NET_AMOUNT)) + $newAmount;
 
             // Update saving
             $saving->update([
@@ -277,6 +372,9 @@ class SavingController extends Controller
                 ] : null,
             ]);
 
+        } catch (ValidationException $e) {
+            DB::rollBack();
+            throw $e;
         } catch (\Exception $e) {
 
             DB::rollBack();
@@ -301,29 +399,33 @@ class SavingController extends Controller
             ], 401);
         }
 
-        $saving = Saving::where('sn', $sn)
-            ->where('customerid', $user->customerid)
-            ->first();
-
-        if (!$saving) {
-            return response()->json([
-                'message' => 'Saving not found.'
-            ], 404);
-        }
-
         DB::beginTransaction();
 
         try {
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found.'
                 ], 404);
             }
+
+            $saving = Saving::where('sn', $sn)
+                ->where('customerid', $user->customerid)
+                ->first();
+
+            if (!$saving || $saving->is_transfer) {
+                DB::rollBack();
+
+                return response()->json(['message' => 'Editable saving not found.'], 404);
+            }
+
+            $this->ensureSavingsRemainAvailable($saving, (float) $saving->add_saving);
 
             $transactionDate = Carbon::parse($saving->created_date)->toDateString();
 
@@ -351,7 +453,7 @@ class SavingController extends Controller
             $saving->delete();
 
             $totalSaving = Saving::where('customerid', $user->customerid)
-                ->sum('add_saving');
+                ->sum(DB::raw(Saving::NET_AMOUNT));
 
             DB::commit();
 
@@ -372,6 +474,9 @@ class SavingController extends Controller
                 ] : null,
             ]);
 
+        } catch (ValidationException $e) {
+            DB::rollBack();
+            throw $e;
         } catch (\Exception $e) {
 
             DB::rollBack();
@@ -426,13 +531,13 @@ class SavingController extends Controller
             ]);
         }
 
-        $data = $query->orderBy('created_date', 'ASC')->get();
+        $data = $query->orderBy('created_date', 'ASC')->orderBy('id')->get();
 
         // Running total
         $runningTotal = 0;
 
         foreach ($data as $sav) {
-            $runningTotal += (float) $sav->add_saving;
+            $runningTotal += ($sav->is_transfer ? -1 : 1) * (float) $sav->add_saving;
             $sav->total_saving = $runningTotal;
         }
 
@@ -494,7 +599,7 @@ class SavingController extends Controller
                 break;
         }
 
-        $totalSaving = $query->sum('add_saving');
+        $totalSaving = $query->sum(DB::raw(Saving::NET_AMOUNT));
 
         $balance = Balance::with('currency')
             ->where('customerid', $user->customerid)
@@ -531,7 +636,7 @@ class SavingController extends Controller
                 DB::raw('DATE(created_date)'),
                 [$startDate->toDateString(), $endDate->toDateString()]
             )
-            ->selectRaw('DATE(created_date) as date, SUM(add_saving) as total')
+            ->selectRaw('DATE(created_date) as date, SUM(' . Saving::NET_AMOUNT . ') as total')
             ->groupBy('date')
             ->orderBy('date')
             ->get()
@@ -599,7 +704,7 @@ class SavingController extends Controller
                 DB::raw('DATE(created_date)'),
                 [$startDate->toDateString(), $endDate->toDateString()]
             )
-            ->selectRaw('YEAR(created_date) as year, MONTH(created_date) as month, SUM(add_saving) as total')
+            ->selectRaw('YEAR(created_date) as year, MONTH(created_date) as month, SUM(' . Saving::NET_AMOUNT . ') as total')
             ->groupBy('year', 'month')
             ->orderBy('year')
             ->orderBy('month')
@@ -708,7 +813,7 @@ class SavingController extends Controller
         }
 
         $categorySavings = $query
-            ->select('saving_category', DB::raw('SUM(add_saving) as total_amount'))
+            ->select('saving_category', DB::raw('SUM(' . Saving::NET_AMOUNT . ') as total_amount'))
             ->groupBy('saving_category')
             ->orderBy('saving_category')
             ->get();
