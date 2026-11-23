@@ -18,6 +18,10 @@ class BalanceService
 
         return DB::transaction(function () use ($customerId, $today) {
 
+            $master = Balance::where('customerid', $customerId)
+                ->lockForUpdate()
+                ->firstOrFail();
+
             $existing = DailyBalance::where('customerid', $customerId)
                 ->where('balance_date', $today)
                 ->lockForUpdate()
@@ -32,10 +36,6 @@ class BalanceService
                 ->orderByDesc('balance_date')
                 ->lockForUpdate()
                 ->first();
-
-            $master = Balance::where('customerid', $customerId)
-                ->lockForUpdate()
-                ->firstOrFail();
 
             $opening = $previous
                 ? $previous->closing_balance

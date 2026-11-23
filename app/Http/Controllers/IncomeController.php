@@ -32,9 +32,11 @@ class IncomeController extends Controller
             // Opening balance must exist
             $balance = Balance::where('customerid', $user->customerid)
                 ->with('currency')
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found. Please create opening balance first.'
                 ], 404);
@@ -390,9 +392,11 @@ class IncomeController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found.'
                 ], 404);
@@ -511,9 +515,11 @@ class IncomeController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found.'
                 ], 404);

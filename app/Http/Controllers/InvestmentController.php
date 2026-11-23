@@ -31,9 +31,11 @@ class InvestmentController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found. Please create opening balance first.'
                 ], 404);
@@ -70,6 +72,7 @@ class InvestmentController extends Controller
 
             // Check sufficient balance
             if ($dailyBalance->closing_balance < $request->add_investment) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Insufficient balance.',
                     'available_balance' => (float) $dailyBalance->closing_balance,
@@ -174,9 +177,11 @@ class InvestmentController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found.'
                 ], 404);
@@ -197,6 +202,7 @@ class InvestmentController extends Controller
                     $dailyBalance->closing_balance + $oldAmount;
 
                 if ($newAmount > $availableBalance) {
+                    DB::rollBack();
                     return response()->json([
                         'message' => 'Insufficient balance.',
                         'available_balance' => (float) $availableBalance,
@@ -289,9 +295,11 @@ class InvestmentController extends Controller
 
             $balance = Balance::with('currency')
                 ->where('customerid', $user->customerid)
+                ->lockForUpdate()
                 ->first();
 
             if (!$balance) {
+                DB::rollBack();
                 return response()->json([
                     'message' => 'Opening balance not found.'
                 ], 404);

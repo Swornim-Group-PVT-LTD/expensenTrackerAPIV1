@@ -197,9 +197,15 @@ class ExpenseCategoryController extends Controller
             ->whereDate('created_date', $date)
             ->sum('add_expenses');
 
+        $totalCredit += Saving::where('customerid', $customerId)
+            ->whereDate('created_date', $date)
+            ->whereNotNull('transfer_key')
+            ->sum('add_saving');
+
         // Total saving for the date
         $saving = Saving::where('customerid', $customerId)
             ->whereDate('created_date', $date)
+            ->where('want_to_deduct_from_balance', true)
             ->sum('add_saving');
 
         // Total investment for the date

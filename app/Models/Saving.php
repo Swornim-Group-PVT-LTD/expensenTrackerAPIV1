@@ -9,10 +9,23 @@ class Saving extends Model
 {
     use HasFactory;
 
+    public const NET_AMOUNT = 'CASE WHEN transfer_key IS NULL THEN add_saving ELSE -add_saving END';
+
+    protected $hidden = ['transfer_key'];
+
+    protected $appends = ['is_transfer'];
+
+    public function getIsTransferAttribute(): bool
+    {
+        return $this->transfer_key !== null;
+    }
+
     protected $table = 'savings';
 
     protected $fillable = [
         'sn',
+        'transfer_key',
+        'remarks',
         'customerid',
         'add_saving',
         'total_saving',
