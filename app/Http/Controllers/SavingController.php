@@ -6,6 +6,7 @@ use App\Models\Saving;
 use App\Models\Balance;
 use App\Models\DailyBalance;
 use App\Services\BalanceService;
+use App\Services\SavingTransferAvailability;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Http\Request;
@@ -79,8 +80,117 @@ class SavingController extends Controller
         }, 3);
     }
 
-    private function ensureSavingsRemainAvailable(Saving $saving, float $reduction): void
+    public function transferSelected(
+        Request $request,
+        BalanceService $balanceService,
+        SavingTransferAvailability $availability
+    ) {
+        $data = $request->validate([
+            'entries' => 'required|array|min:1|max:100',
+            'entries.*' => 'required|array:id,amount',
+            'entries.*.id' => 'required|integer|min:1|distinct',
+            'entries.*.amount' => ['required', 'numeric', 'min:0.01', 'max:99999999.99', 'regex:/^\d+(?:\.\d{1,2})?$/'],
+            'transfer_key' => 'required|uuid',
+            'remarks' => 'nullable|string|max:255',
+        ]);
+
+        $requested = collect($data['entries'])->mapWithKeys(fn ($entry) => [
+            (int) $entry['id'] => (int) round($entry['amount'] * 100),
+        ])->sortKeys();
+        $customerId = $request->user()->customerid;
+        $key = strtolower($data['transfer_key']);
+        $remarks = $data['remarks'] ?? null;
+        $total = $requested->sum() / 100;
+
+        return DB::transaction(function () use ($balanceService, $availability, $requested, $customerId, $key, $remarks, $total) {
+            Balance::where('customerid', $customerId)->lockForUpdate()->firstOrFail();
+            $savings = Saving::where('customerid', $customerId);
+            $transfers = (clone $savings)->where('transfer_batch_key', $key)->get();
+            $daily = null;
+            $status = 200;
+
+            if ($transfers->isNotEmpty()) {
+                $processed = $transfers->mapWithKeys(fn ($entry) => [
+                    $entry->source_saving_id => (int) round($entry->add_saving * 100),
+                ])->sortKeys();
+                abort_if(
+                    $processed->all() !== $requested->all()
+                        || $transfers->contains(fn ($entry) => $entry->remarks !== ($remarks ?? $entry->saving_category)),
+                    409,
+                    'This transfer key has already been used with different details.'
+                );
+            } else {
+                $entries = (clone $savings)->get()->keyBy('id');
+                $remaining = $availability->remainingCents($entries);
+
+                foreach ($requested as $id => $cents) {
+                    if ($cents > ($remaining[$id] ?? 0)) {
+                        throw ValidationException::withMessages([
+                            'entries' => 'A selected saving is unavailable or has insufficient funds. Refresh the savings list.',
+                        ]);
+                    }
+                }
+
+                // Check category totals using the database's category comparison rules.
+                $requestedEntries = (clone $savings)->whereIn('id', $requested->keys());
+                foreach ((clone $requestedEntries)->select('saving_category')->distinct()->pluck('saving_category') as $category) {
+                    $categorySavings = (clone $savings)->where('saving_category', $category);
+                    $categoryRequested = (clone $categorySavings)->whereIn('id', $requested->keys())
+                        ->pluck('id')->sum(fn ($id) => $requested[$id]);
+                    if ($categoryRequested > (int) round($categorySavings->sum(DB::raw(Saving::NET_AMOUNT)) * 100)) {
+                        throw ValidationException::withMessages([
+                            'entries' => 'The selected amounts exceed the available savings in a category.',
+                        ]);
+                    }
+                }
+
+                $daily = $balanceService->addCredit($customerId, $total);
+                $net = (int) round($savings->sum(DB::raw(Saving::NET_AMOUNT)) * 100);
+
+                $transfers = $requested->map(function ($cents, $id) use ($entries, $customerId, $daily, $key, $remarks, &$net) {
+                    $source = $entries[$id];
+                    $net -= $cents;
+
+                    return Saving::create([
+                        'sn' => 'SAV' . strtoupper(Str::random(8)),
+                        'customerid' => $customerId,
+                        'add_saving' => $cents / 100,
+                        'total_saving' => $net / 100,
+                        'saving_category' => $source->saving_category,
+                        'want_to_deduct_from_balance' => false,
+                        'transfer_key' => (string) Str::uuid(),
+                        'transfer_batch_key' => $key,
+                        'source_saving_id' => $source->id,
+                        'remarks' => $remarks ?? $source->saving_category,
+                        'created_date' => $daily->balance_date,
+                        'updated_date' => $daily->balance_date,
+                    ]);
+                })->values();
+
+                $status = 201;
+            }
+
+            return response()->json([
+                'message' => 'Selected savings transferred to balance.',
+                'data' => $transfers,
+                'amount' => $total,
+                'daily_balance' => $daily,
+            ], $status);
+        }, 3);
+    }
+
+    private function ensureSavingsRemainAvailable(Saving $saving, float $reduction, bool $changingCategory = false): void
     {
+        $transferred = Saving::where('customerid', $saving->customerid)
+            ->where('source_saving_id', $saving->id)
+            ->sum('add_saving');
+
+        if ($transferred > 0 && ($changingCategory || round($saving->add_saving - $reduction, 2) < (float) $transferred)) {
+            throw ValidationException::withMessages([
+                'saving_category' => 'This change would remove savings already transferred from this entry.',
+            ]);
+        }
+
         if ($reduction <= 0) {
             return;
         }
@@ -293,7 +403,8 @@ class SavingController extends Controller
 
             $this->ensureSavingsRemainAvailable(
                 $saving,
-                $saving->saving_category === $request->saving_category ? $oldAmount - $newAmount : $oldAmount
+                $saving->saving_category === $request->saving_category ? $oldAmount - $newAmount : $oldAmount,
+                $saving->saving_category !== $request->saving_category
             );
 
             $oldFlag = (bool) $saving->want_to_deduct_from_balance;
@@ -488,7 +599,7 @@ class SavingController extends Controller
         }
     }
 
-    public function getSavingLists(Request $request)
+    public function getSavingLists(Request $request, SavingTransferAvailability $availability)
     {
         $user = Auth::user();
 
@@ -525,13 +636,15 @@ class SavingController extends Controller
 
         // Custom date range
         if ($request->start_date && $request->end_date) {
-            $query->whereBetween('created_date', [
-                Carbon::parse($request->start_date),
-                Carbon::parse($request->end_date)
-            ]);
+            $query->whereDate('created_date', '>=', Carbon::parse($request->start_date))
+                ->whereDate('created_date', '<=', Carbon::parse($request->end_date));
         }
 
         $data = $query->orderBy('created_date', 'ASC')->orderBy('id')->get();
+
+        $remaining = $availability->remainingCents(Saving::where('customerid', $user->customerid)->get([
+            'id', 'saving_category', 'add_saving', 'transfer_key', 'source_saving_id',
+        ]));
 
         // Running total
         $runningTotal = 0;
@@ -539,6 +652,7 @@ class SavingController extends Controller
         foreach ($data as $sav) {
             $runningTotal += ($sav->is_transfer ? -1 : 1) * (float) $sav->add_saving;
             $sav->total_saving = $runningTotal;
+            $sav->transferable_amount = ($remaining[$sav->id] ?? 0) / 100;
         }
 
         $balance = Balance::with('currency')

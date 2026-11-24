@@ -65,6 +65,7 @@ Route::middleware('auth.token:sanctum')->group(function () {
 
 //Saving Routes
 Route::middleware('auth.token:sanctum')->group(function () {
+    Route::post('/savings/transfer-selected', [SavingController::class, 'transferSelected']);
     Route::post('/savings/transfer', [SavingController::class, 'transferToBalance']);
     Route::get('/savings/transfer-options', [SavingController::class, 'getCategoryWiseSavings']);
     Route::post('/savings', [SavingController::class, 'addSaving']);  // Add saving

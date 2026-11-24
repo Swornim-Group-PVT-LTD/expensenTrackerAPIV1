@@ -11,7 +11,7 @@ class Saving extends Model
 
     public const NET_AMOUNT = 'CASE WHEN transfer_key IS NULL THEN add_saving ELSE -add_saving END';
 
-    protected $hidden = ['transfer_key'];
+    protected $hidden = ['transfer_key', 'transfer_batch_key'];
 
     protected $appends = ['is_transfer'];
 
@@ -25,6 +25,8 @@ class Saving extends Model
     protected $fillable = [
         'sn',
         'transfer_key',
+        'source_saving_id',
+        'transfer_batch_key',
         'remarks',
         'customerid',
         'add_saving',
