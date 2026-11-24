@@ -9,7 +9,9 @@ class Saving extends Model
 {
     use HasFactory;
 
-    public const NET_AMOUNT = 'CASE WHEN transfer_key IS NULL THEN add_saving ELSE -add_saving END';
+    public const TRANSFERABLE_AMOUNT = 'CASE WHEN transfer_key IS NULL THEN add_saving ELSE -add_saving END';
+
+    public const NET_AMOUNT = 'CASE WHEN transfer_key IS NULL THEN add_saving ELSE -COALESCE(savings_deduction, add_saving) END';
 
     protected $hidden = ['transfer_key', 'transfer_batch_key'];
 
@@ -26,6 +28,7 @@ class Saving extends Model
         'sn',
         'transfer_key',
         'source_saving_id',
+        'savings_deduction',
         'transfer_batch_key',
         'remarks',
         'customerid',
@@ -40,6 +43,7 @@ class Saving extends Model
     // Cast the flag as boolean
     protected $casts = [
         'want_to_deduct_from_balance' => 'boolean',
+        'savings_deduction' => 'decimal:2',
     ];
 
     // Disable Laravel's default timestamps
