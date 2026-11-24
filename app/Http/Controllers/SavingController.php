@@ -16,7 +16,11 @@ use Carbon\Carbon;
 
 class SavingController extends Controller
 {
-    public function transferToBalance(Request $request, BalanceService $balanceService)
+    public function transferToBalance(
+        Request $request,
+        BalanceService $balanceService,
+        SavingTransferAvailability $availability
+    )
     {
         $data = $request->validate([
             'saving_category' => 'required|string|max:255',
@@ -30,7 +34,7 @@ class SavingController extends Controller
         $amount = (float) $data['amount'];
         $remarks = $data['remarks'] ?? $data['saving_category'];
 
-        return DB::transaction(function () use ($data, $customerId, $amount, $remarks, $balanceService) {
+        return DB::transaction(function () use ($data, $customerId, $amount, $remarks, $balanceService, $availability) {
             $balance = Balance::where('customerid', $customerId)->lockForUpdate()->firstOrFail();
             $savings = Saving::where('customerid', $customerId);
             $transfer = (clone $savings)->where('transfer_key', $data['transfer_key'])->first();
@@ -46,13 +50,31 @@ class SavingController extends Controller
                 );
                 $status = 200;
             } else {
-                $available = (clone $savings)->where('saving_category', $data['saving_category'])
-                    ->sum(DB::raw(Saving::NET_AMOUNT));
+                $categoryEntries = (clone $savings)->where('saving_category', $data['saving_category'])->orderBy('id')->get();
+                $remaining = $availability->remainingCents($categoryEntries);
+                $unallocated = (int) round($amount * 100);
 
-                if ((int) round($amount * 100) > (int) round($available * 100)) {
+                $categoryAvailable = (int) round((clone $savings)->where('saving_category', $data['saving_category'])
+                    ->sum(DB::raw(Saving::TRANSFERABLE_AMOUNT)) * 100);
+
+                if ($unallocated > min(array_sum($remaining), $categoryAvailable)) {
                     throw ValidationException::withMessages([
                         'amount' => 'The transfer exceeds the available savings for this category.',
                     ]);
+                }
+
+                $deduction = 0;
+                foreach ($categoryEntries as $source) {
+                    $allocated = min($unallocated, $remaining[$source->id] ?? 0);
+                    $unallocated -= $allocated;
+
+                    if ($source->want_to_deduct_from_balance) {
+                        $deduction += $allocated;
+                    }
+
+                    if ($unallocated === 0) {
+                        break;
+                    }
                 }
 
                 $daily = $balanceService->addCredit($customerId, $amount);
@@ -60,7 +82,8 @@ class SavingController extends Controller
                     'sn' => 'SAV' . strtoupper(Str::random(8)),
                     'customerid' => $customerId,
                     'add_saving' => $amount,
-                    'total_saving' => round($savings->sum(DB::raw(Saving::NET_AMOUNT)) - $amount, 2),
+                    'savings_deduction' => $deduction / 100,
+                    'total_saving' => round($savings->sum(DB::raw(Saving::NET_AMOUNT)) - $deduction / 100, 2),
                     'saving_category' => $data['saving_category'],
                     'want_to_deduct_from_balance' => false,
                     'transfer_key' => $data['transfer_key'],
@@ -137,7 +160,7 @@ class SavingController extends Controller
                     $categorySavings = (clone $savings)->where('saving_category', $category);
                     $categoryRequested = (clone $categorySavings)->whereIn('id', $requested->keys())
                         ->pluck('id')->sum(fn ($id) => $requested[$id]);
-                    if ($categoryRequested > (int) round($categorySavings->sum(DB::raw(Saving::NET_AMOUNT)) * 100)) {
+                    if ($categoryRequested > (int) round($categorySavings->sum(DB::raw(Saving::TRANSFERABLE_AMOUNT)) * 100)) {
                         throw ValidationException::withMessages([
                             'entries' => 'The selected amounts exceed the available savings in a category.',
                         ]);
@@ -149,7 +172,8 @@ class SavingController extends Controller
 
                 $transfers = $requested->map(function ($cents, $id) use ($entries, $customerId, $daily, $key, $remarks, &$net) {
                     $source = $entries[$id];
-                    $net -= $cents;
+                    $deduction = $source->want_to_deduct_from_balance ? $cents : 0;
+                    $net -= $deduction;
 
                     return Saving::create([
                         'sn' => 'SAV' . strtoupper(Str::random(8)),
@@ -161,6 +185,7 @@ class SavingController extends Controller
                         'transfer_key' => (string) Str::uuid(),
                         'transfer_batch_key' => $key,
                         'source_saving_id' => $source->id,
+                        'savings_deduction' => $deduction / 100,
                         'remarks' => $remarks ?? $source->saving_category,
                         'created_date' => $daily->balance_date,
                         'updated_date' => $daily->balance_date,
@@ -199,7 +224,7 @@ class SavingController extends Controller
             ->where('saving_category', $saving->saving_category);
 
         if ((clone $categorySavings)->whereNotNull('transfer_key')->exists()
-            && round($categorySavings->sum(DB::raw(Saving::NET_AMOUNT)) - $reduction, 2) < 0) {
+            && round($categorySavings->sum(DB::raw(Saving::TRANSFERABLE_AMOUNT)) - $reduction, 2) < 0) {
             throw ValidationException::withMessages([
                 'saving_category' => 'Some of these savings were transferred. This change would leave the category overdrawn.',
             ]);
@@ -650,7 +675,9 @@ class SavingController extends Controller
         $runningTotal = 0;
 
         foreach ($data as $sav) {
-            $runningTotal += ($sav->is_transfer ? -1 : 1) * (float) $sav->add_saving;
+            $runningTotal += $sav->is_transfer
+                ? -(float) ($sav->savings_deduction ?? $sav->add_saving)
+                : (float) $sav->add_saving;
             $sav->total_saving = $runningTotal;
             $sav->transferable_amount = ($remaining[$sav->id] ?? 0) / 100;
         }
@@ -877,7 +904,12 @@ class SavingController extends Controller
         ]);
     }
 
-    public function getCategoryWiseSavings(Request $request)
+    public function getTransferOptions(Request $request)
+    {
+        return $this->getCategoryWiseSavings($request, true);
+    }
+
+    public function getCategoryWiseSavings(Request $request, bool $transferable = false)
     {
         $user = Auth::user();
 
@@ -926,8 +958,9 @@ class SavingController extends Controller
             }
         }
 
+        $amount = $transferable ? Saving::TRANSFERABLE_AMOUNT : Saving::NET_AMOUNT;
         $categorySavings = $query
-            ->select('saving_category', DB::raw('SUM(' . Saving::NET_AMOUNT . ') as total_amount'))
+            ->select('saving_category', DB::raw('SUM(' . $amount . ') as total_amount'))
             ->groupBy('saving_category')
             ->orderBy('saving_category')
             ->get();
