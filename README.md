@@ -19,3 +19,18 @@ Run `php artisan migrate --force` against the existing application database befo
 Send an authenticated `POST /api/savings/transfer` request with `saving_category`, `amount`, `transfer_key` (a UUID generated once per transfer), and optional `remarks`. For example, transfer `500.00` from `CIT` with remarks `CIT withdrawal`. The amount is drawn from that category's unfiltered savings balance. Reuse the same UUID and payload when retrying a request whose outcome is unknown. A new transfer returns 201 and a successful replay returns 200.
 
 Use `GET /api/savings/transfer-options` for category balances. Transfer entries appear in `GET /api/savings` with `is_transfer: true`, a positive transfer amount in `add_saving`, remarks, and a reduced running savings total. The account statement lists them as credits labeled **Saving Transfer Balance**. They are internal transfers and do not increase income.
+
+For a bulk transfer, use `POST /api/savings/transfer-selected` with a new UUID in `transfer_key`, optional shared `remarks`, and up to 100 distinct entries in `entries`. Each entry includes the savings row `id` and decimal `amount`. Use `transferable_amount` from `GET /api/savings` to find each row's available amount, even when filtering the list.
+
+```json
+{
+  "entries": [
+    { "id": 33, "amount": "500.00" },
+    { "id": 36, "amount": "250.00" }
+  ],
+  "transfer_key": "70adc55b-a5f0-4dfa-af6a-17631e901561",
+  "remarks": "Transfer to balance"
+}
+```
+
+The request credits today's balance once and records a transfer for each source row. If any row is unavailable, the whole request fails. The source category is preserved and serves as the default remark. Earlier category transfers did not link individual rows, so they reduce the oldest available entries in their category first. Reuse the same UUID and payload to retry a bulk request safely.
