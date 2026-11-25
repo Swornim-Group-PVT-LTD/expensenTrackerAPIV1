@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class InvoiceController extends Controller
 {
@@ -16,7 +17,7 @@ class InvoiceController extends Controller
      */
     public function addInvoice(Request $request)
     {
-        $request->validate([
+        $validated = $request->validate([
             'invoice_number'       => 'nullable|string|max:50',
             'purchase_order'       => 'nullable|string|max:100',
             'logo'                 => 'nullable|image|mimes:jpg,jpeg,png|max:5120',
@@ -33,6 +34,7 @@ class InvoiceController extends Controller
             'bank_account_details' => 'nullable|string',
 
             'tax_percentage'       => 'nullable|numeric|min:0',
+            'discount_type'        => 'nullable|in:flat,percent',
             'discount_amount'      => 'nullable|numeric|min:0',
             'shipping_fee'         => 'nullable|numeric|min:0',
 
@@ -43,6 +45,8 @@ class InvoiceController extends Controller
         ]);
 
         $user = Auth::user();
+
+        $totals = $this->calculateTotals($validated);
 
         DB::beginTransaction();
 
@@ -68,37 +72,6 @@ class InvoiceController extends Controller
                 $logoPath = $request->file('logo')
                     ->store('invoices/logos', 'public');
             }
-
-            /*
-             * Calculate Subtotal
-             */
-            $subtotal = 0;
-
-            foreach ($request->items as $item) {
-
-                $subtotal +=
-                    $item['unit_cost'] *
-                    $item['quantity'];
-            }
-
-            $taxPercentage = $request->tax_percentage ?? 0;
-            $discountAmount = $request->discount_amount ?? 0;
-            $shippingFee = $request->shipping_fee ?? 0;
-
-            /*
-             * Calculate Tax
-             */
-            $taxAmount =
-                ($subtotal * $taxPercentage) / 100;
-
-            /*
-             * Calculate Total
-             */
-            $totalAmount =
-                $subtotal
-                + $taxAmount
-                - $discountAmount
-                + $shippingFee;
 
             /*
              * Current Date
@@ -144,20 +117,7 @@ class InvoiceController extends Controller
                 'bank_account_details' =>
                     $request->bank_account_details,
 
-                'subtotal' =>
-                    $subtotal,
-
-                'tax_percentage' =>
-                    $taxPercentage,
-
-                'discount_amount' =>
-                    $discountAmount,
-
-                'shipping_fee' =>
-                    $shippingFee,
-
-                'total_amount' =>
-                    $totalAmount,
+                ...$totals,
 
                 'created_date' =>
                     $today,
@@ -254,6 +214,9 @@ class InvoiceController extends Controller
 
                     'discount_amount' =>
                         $invoice->discount_amount,
+
+                    'discount_type' =>
+                        $invoice->discount_type,
 
                     'shipping_fee' =>
                         $invoice->shipping_fee,
@@ -417,6 +380,9 @@ class InvoiceController extends Controller
             'tax_percentage' =>
                 'nullable|numeric|min:0',
 
+            'discount_type' =>
+                'nullable|in:flat,percent',
+
             'discount_amount' =>
                 'nullable|numeric|min:0',
 
@@ -437,6 +403,8 @@ class InvoiceController extends Controller
             'items.*.quantity' =>
                 'required|numeric|min:0.01',
         ]);
+
+        $totals = $this->calculateTotals($validated);
 
         DB::beginTransaction();
 
@@ -478,36 +446,6 @@ class InvoiceController extends Controller
                         );
             }
 
-            /*
-             * Calculate Subtotal
-             */
-            $subtotal = 0;
-
-            foreach ($request->items as $item) {
-
-                $subtotal +=
-                    $item['unit_cost'] *
-                    $item['quantity'];
-            }
-
-            $taxPercentage =
-                $request->tax_percentage ?? 0;
-
-            $discountAmount =
-                $request->discount_amount ?? 0;
-
-            $shippingFee =
-                $request->shipping_fee ?? 0;
-
-            $taxAmount =
-                ($subtotal * $taxPercentage) / 100;
-
-            $totalAmount =
-                $subtotal
-                + $taxAmount
-                - $discountAmount
-                + $shippingFee;
-
             $today = now()->toDateString();
 
             /*
@@ -545,20 +483,7 @@ class InvoiceController extends Controller
                 'bank_account_details' =>
                     $request->bank_account_details,
 
-                'subtotal' =>
-                    $subtotal,
-
-                'tax_percentage' =>
-                    $taxPercentage,
-
-                'discount_amount' =>
-                    $discountAmount,
-
-                'shipping_fee' =>
-                    $shippingFee,
-
-                'total_amount' =>
-                    $totalAmount,
+                ...$totals,
 
                 'updated_date' =>
                     $today,
@@ -619,6 +544,52 @@ class InvoiceController extends Controller
         }
     }
 
+
+    private function calculateTotals(array $validated): array
+    {
+        $subtotal = array_sum(array_map(
+            fn (array $item) => $item['unit_cost'] * $item['quantity'],
+            $validated['items'],
+        ));
+        $type = $validated['discount_type'] ?? null;
+        $discount = (float) ($validated['discount_amount'] ?? 0);
+        $taxPercentage = (float) ($validated['tax_percentage'] ?? 0);
+        $shipping = (float) ($validated['shipping_fee'] ?? 0);
+
+        // Requests without a discount type retain the legacy flat discount calculation.
+        if ($type === null) {
+            $total = $subtotal + ($subtotal * $taxPercentage / 100) - $discount + $shipping;
+        } else {
+            $subtotal = round($subtotal, 2);
+            $discount = round($discount, 2);
+            $taxPercentage = round($taxPercentage, 2);
+            $shipping = round($shipping, 2);
+
+            if ($type === 'percent' && $discount > 100) {
+                throw ValidationException::withMessages([
+                    'discount_amount' => 'Percentage discount cannot exceed 100%.',
+                ]);
+            }
+            if ($type === 'flat' && $discount > $subtotal) {
+                throw ValidationException::withMessages([
+                    'discount_amount' => 'Flat discount cannot exceed the subtotal.',
+                ]);
+            }
+
+            $appliedDiscount = $type === 'percent' ? round($subtotal * $discount / 100, 2) : $discount;
+            $taxable = $subtotal - $appliedDiscount;
+            $total = round($taxable + round($taxable * $taxPercentage / 100, 2) + $shipping, 2);
+        }
+
+        return [
+            'subtotal' => $subtotal,
+            'tax_percentage' => $taxPercentage,
+            'discount_type' => $type,
+            'discount_amount' => $discount,
+            'shipping_fee' => $shipping,
+            'total_amount' => $total,
+        ];
+    }
 
     /**
      * Update only the invoice status.
