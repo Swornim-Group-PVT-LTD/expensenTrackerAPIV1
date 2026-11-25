@@ -28,6 +28,7 @@ class Invoice extends Model
         'subtotal',
         'tax_percentage',
         'discount_amount',
+        'discount_type',
         'shipping_fee',
         'total_amount',
         'created_date',
